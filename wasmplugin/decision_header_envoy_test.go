@@ -7,6 +7,7 @@ package wasmplugin
 
 import (
 	"bufio"
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -74,7 +75,7 @@ func TestDecisionHeaderEnvoy(t *testing.T) {
 	config, err := json.Marshal(map[string]interface{}{
 		"encrypted_decision_header": true,
 		"default_directives":        "default",
-		"per_authority_directives":  map[string]string{"phase2.example.com": "bodyless"},
+		"per_authority_directives":  map[string]string{"phase2.example.com": "bodyless", "response.example.com": "response"},
 		"directives_map": map[string][]string{"default": {
 			"Include @recommended-conf", "SecRuleEngine On", "SecResponseBodyAccess Off", "Include @crs-setup-conf",
 			`SecAction "id:100000,phase:1,pass,nolog,setvar:tx.blocking_paranoia_level=2,setvar:tx.early_blocking=1"`,
@@ -83,6 +84,10 @@ func TestDecisionHeaderEnvoy(t *testing.T) {
 		}, "bodyless": {
 			"SecRuleEngine On",
 			`SecAction "id:190002,phase:2,deny,status:403,msg:'bodyless request denied',setvar:tx.inbound_anomaly_score_pl1=+5"`,
+		}, "response": {
+			"SecRuleEngine On", "SecRequestBodyAccess On", "SecRequestBodyLimit 6", "SecRequestBodyLimitAction ProcessPartial",
+			"SecResponseBodyAccess On", "SecResponseBodyMimeType text/plain",
+			`SecRule RESPONSE_BODY "@beginsWith upstream" "id:190003,phase:4,deny,status:403"`,
 		}},
 	})
 	require.NoError(t, err)
@@ -224,4 +229,25 @@ func TestDecisionHeaderEnvoy(t *testing.T) {
 			}
 		})
 	}
+	t.Run("response after partial request", func(t *testing.T) {
+		conn, err := net.DialTimeout("tcp", fmt.Sprintf("127.0.0.1:%d", port), 5*time.Second)
+		require.NoError(t, err)
+		defer conn.Close()
+		require.NoError(t, conn.SetDeadline(time.Now().Add(5*time.Second)))
+		_, err = io.WriteString(conn, "POST /partial HTTP/1.1\r\nHost: response.example.com\r\nContent-Type: text/plain\r\nContent-Length: 8\r\nConnection: close\r\n\r\naaaa")
+		require.NoError(t, err)
+		// Deliver separate body callbacks so the request has a nonzero read offset
+		// when ProcessPartial accepts its final chunk.
+		time.Sleep(100 * time.Millisecond)
+		_, err = io.WriteString(conn, "bbbb")
+		require.NoError(t, err)
+		response, err := http.ReadResponse(bufio.NewReader(conn), &http.Request{Method: http.MethodPost})
+		require.NoError(t, err)
+		defer response.Body.Close()
+		body, err := io.ReadAll(response.Body)
+		require.NoError(t, err)
+		require.Equal(t, http.StatusOK, response.StatusCode)
+		require.Equal(t, bytes.Repeat([]byte{0}, len("upstream")), body)
+	})
+
 }
