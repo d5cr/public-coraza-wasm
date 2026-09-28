@@ -183,3 +183,14 @@ With this feature enabled, WAF-generated 403 responses use
 
 The body and `X-D5C-WAF` carry the same token. Application-generated 403 bodies
 and other WAF status codes keep their existing behavior.
+
+Inspection failures return HTTP 500 instead of forwarding an uninspected
+request. When a transaction exists, its encrypted request decision records
+`b=1` with `r=0` if no rule caused the failure. Response-body inspection
+failures suppress the remaining response content because its headers may
+already have been sent. Keep the host's failure policy closed: if the host
+cannot replace forbidden response bytes, the plugin traps to stop the stream.
+
+An authority without a matching or default policy also returns HTTP 500.
+To intentionally allow unmatched authorities without inspection, configure an
+explicit default policy with `SecRuleEngine Off`.

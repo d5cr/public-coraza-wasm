@@ -643,7 +643,8 @@ func TestBadRequest(t *testing.T) {
 				id := host.InitializeHttpContext()
 
 				action := host.CallOnRequestHeaders(id, tt.reqHdrs, false)
-				require.Equal(t, types.ActionContinue, action)
+				require.Equal(t, types.ActionPause, action)
+				require.Equal(t, uint32(500), host.GetSentLocalResponse(id).StatusCode)
 
 				logs := strings.Join(host.GetErrorLogs(), "\n")
 				require.Contains(t, logs, tt.msg)
@@ -694,7 +695,8 @@ func TestBadResponse(t *testing.T) {
 				host.CallOnRequestHeaders(id, tt.reqHdrs, false)
 
 				action := host.CallOnResponseHeaders(id, tt.respHdrs, false)
-				require.Equal(t, types.ActionContinue, action)
+				require.Equal(t, types.ActionPause, action)
+				require.Equal(t, uint32(500), host.GetSentLocalResponse(id).StatusCode)
 
 				logs := strings.Join(host.GetErrorLogs(), "\n")
 				require.Contains(t, logs, tt.msg)
@@ -748,8 +750,8 @@ func TestPerAuthorityDirectives(t *testing.T) {
 				{":method", "GET"},
 				{":authority", "bar.example.com"},
 			},
-			conf:               `{"directives_map": {"rs1": ["SecRuleEngine On","SecRule REQUEST_URI \"@streq /rs1\" \"id:101,phase:1,t:lowercase,deny\""]}, "per_authority_directives":{"foo.example.com":"rs1"}}`,
-			localResponseIsNil: true,
+			conf:                    `{"directives_map": {"rs1": ["SecRuleEngine On","SecRule REQUEST_URI \"@streq /rs1\" \"id:101,phase:1,t:lowercase,deny\""]}, "per_authority_directives":{"foo.example.com":"rs1"}}`,
+			localResponseStatusCode: 500,
 		},
 		{
 			name: "authority not exist on per_authority_directives but calling allowed value",
@@ -1168,7 +1170,11 @@ func TestResponseProperties(t *testing.T) {
 
 				host.CallOnRequestHeaders(id, reqHdrs, false)
 
-				require.NoError(t, host.SetProperty([]string{"response", "code"}, []byte(tt.status)))
+				status, err := strconv.ParseUint(tt.status, 10, 64)
+				require.NoError(t, err)
+				encodedStatus := make([]byte, 8)
+				binary.LittleEndian.PutUint64(encodedStatus, status)
+				require.NoError(t, host.SetProperty([]string{"response", "code"}, encodedStatus))
 
 				action := host.CallOnResponseHeaders(id, respHdrs, false)
 				require.Equal(t, tt.requestHdrsAction, action)
