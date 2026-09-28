@@ -173,7 +173,9 @@ func TestDecisionHeaderEnvoy(t *testing.T) {
 			request, err := http.NewRequest(method, base+tc.path, strings.NewReader(tc.body))
 			require.NoError(t, err)
 			request.Host = "example.com"
-			request.Header.Set("Content-Type", "application/json")
+			if tc.body != "" {
+				request.Header.Set("Content-Type", "application/json")
+			}
 			request.Header.Set("Accept", "*/*")
 			request.Header.Set("User-Agent", "Mozilla/5.0")
 			request.Header.Set(decisionHeader, "spoofed-client")
@@ -190,6 +192,7 @@ func TestDecisionHeaderEnvoy(t *testing.T) {
 				require.Contains(t, plain, "v1;b=1;")
 				require.NotContains(t, plain, ";s=0;")
 				require.NotContains(t, plain, ";r=949")
+				require.NotContains(t, plain, ";r=901")
 				if tc.body != "" || tc.path == "/blocked" {
 					require.Equal(t, before, calls.Load(), "blocked request completed upstream")
 				}
