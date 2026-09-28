@@ -128,3 +128,48 @@ Coraza: Warning. Javascript method detected [file "@owasp_crs/REQUEST-941-APPLIC
 [tag "OWASP_CRS"] [tag "capec/1000/152/242"] [hostname "my-hostname"] [uri "/anything/?arg=<script>alert(0)</script>"] 
 [unique_id "wTueIQloYpvpWNLzVfy"]	thread=27
 ```
+
+## Encrypted request decisions
+
+This fork can return an encrypted `X-D5C-WAF` response header. Enable it in the
+plugin configuration and pass `CORAZA_WAF_HEADER_KEY` from the proxy's environment:
+
+```yaml
+spec:
+  failStrategy: FAIL_CLOSE
+  vmConfig:
+    env:
+      - name: CORAZA_WAF_HEADER_KEY
+        valueFrom: HOST
+  pluginConfig:
+    encrypted_decision_header: true
+    # Keep the existing directives_map and default_directives here.
+```
+
+Set that environment variable on the gateway container using a Kubernetes
+`secretKeyRef`. Its value must be a base64-encoded, randomly generated 32-byte
+key. Keep the key in your secret manager; do not put it in the WasmPlugin,
+container image, repository, or browser. When enabled, a missing or malformed
+key prevents plugin startup. Restart the gateway proxies when rotating the key.
+The feature is disabled by default and leaves upstream behavior unchanged.
+
+The wire format is `v1.<base64url-without-padding>`. The encoded bytes contain a
+12-byte random nonce followed by 64 bytes of ciphertext and a 16-byte AES-256-GCM
+authentication tag. The associated data is the UTF-8 string `x-d5c-waf:v1`.
+The plaintext is `v1;b=<0|1>;s=<score>;r=<rule ID>`, padded with zero bytes to
+64 bytes. Padding keeps score and rule-ID lengths out of the public header.
+The token is diagnostic data, not an authorization credential or replay proof.
+
+`b` records a request-phase WAF interruption, not an application's HTTP status.
+`s` sums the inbound CRS anomaly counters through the blocking paranoia level,
+including scores accrued before early blocking. `r` is the first matching
+request rule with a message, excluding CRS score gates, reporting rules, and
+rules above the blocking paranoia level. It falls back to the interrupting rule
+ID; zero means no such rule is available. Engine limits can block without a rule
+or anomaly score. The header is a request-inspection snapshot; response rules
+that execute later cannot change a header already sent to the client.
+
+The filter removes client-supplied copies and replaces all upstream copies of
+this header. Both allowed and locally blocked requests receive a token. The
+feature adds no response-body buffering. Configure `SecResponseBodyAccess Off`
+when only incoming traffic should be inspected and responses must stream.

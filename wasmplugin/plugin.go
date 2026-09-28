@@ -5,6 +5,7 @@ package wasmplugin
 
 import (
 	"bytes"
+	"crypto/cipher"
 	"encoding/binary"
 	"errors"
 	"fmt"
@@ -79,6 +80,7 @@ type corazaPlugin struct {
 	// so that we don't need to reimplement all the methods.
 	types.DefaultPluginContext
 	perAuthorityWAFs wafMap
+	decisionAEAD     cipher.AEAD
 	metricLabelsKV   []string
 	metrics          *wafMetrics
 }
@@ -93,6 +95,14 @@ func (ctx *corazaPlugin) OnPluginStart(pluginConfigurationSize int) types.OnPlug
 	if err != nil {
 		proxywasm.LogCriticalf("Failed to parse plugin configuration: %v", err)
 		return types.OnPluginStartStatusFailed
+	}
+
+	if config.encryptedDecisionHeader {
+		ctx.decisionAEAD, err = newDecisionCipher()
+		if err != nil {
+			proxywasm.LogCritical(err.Error())
+			return types.OnPluginStartStatusFailed
+		}
 	}
 
 	// directivesAuthoritesMap is a map of directives name to the list of
@@ -179,6 +189,7 @@ func (ctx *corazaPlugin) OnPluginStart(pluginConfigurationSize int) types.OnPlug
 func (ctx *corazaPlugin) NewHttpContext(contextID uint32) types.HttpContext {
 	return &httpContext{
 		contextID:        contextID,
+		decisionAEAD:     ctx.decisionAEAD,
 		metrics:          ctx.metrics,
 		metricLabelsKV:   ctx.metricLabelsKV,
 		perAuthorityWAFs: ctx.perAuthorityWAFs,
@@ -219,6 +230,7 @@ type httpContext struct {
 	// so that we don't need to reimplement all the methods.
 	types.DefaultHttpContext
 	contextID                uint32
+	decisionAEAD             cipher.AEAD
 	perAuthorityWAFs         wafMap
 	tx                       ctypes.Transaction
 	httpProtocol             string
@@ -236,6 +248,11 @@ func (ctx *httpContext) OnHttpRequestHeaders(numHeaders int, endOfStream bool) t
 	defer logTime("OnHttpRequestHeaders", currentTime())
 
 	ctx.metrics.CountTX()
+	if ctx.decisionAEAD != nil {
+		if err := proxywasm.RemoveHttpRequestHeader(decisionHeader); err != nil && err != types.ErrorStatusNotFound {
+			panic("WAF decision request header removal failed")
+		}
+	}
 
 	authority, err := proxywasm.GetHttpRequestHeader(":authority")
 	if err != nil {
@@ -462,6 +479,7 @@ func (ctx *httpContext) OnHttpRequestTrailers(numTrailers int) types.Action {
 
 func (ctx *httpContext) OnHttpResponseHeaders(numHeaders int, endOfStream bool) types.Action {
 	defer logTime("OnHttpResponseHeaders", currentTime())
+	defer ctx.writeDecisionHeader()
 
 	if ctx.interruptedAt.isInterrupted() {
 		// Handling the interruption (see handleInterruption) generates a HttpResponse with the required interruption status code.
@@ -720,7 +738,11 @@ func (ctx *httpContext) handleInterruption(phase interruptionPhase, interruption
 	if statusCode == 0 {
 		statusCode = defaultInterruptionStatusCode
 	}
-	if err := proxywasm.SendHttpResponse(uint32(statusCode), nil, nil, noGRPCStream); err != nil {
+	var headers [][2]string
+	if ctx.decisionAEAD != nil {
+		headers = [][2]string{{decisionHeader, ctx.encryptedDecision()}}
+	}
+	if err := proxywasm.SendHttpResponse(uint32(statusCode), headers, nil, noGRPCStream); err != nil {
 		panic(err)
 	}
 
