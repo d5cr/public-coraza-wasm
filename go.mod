@@ -9,6 +9,7 @@ require (
 	github.com/tetratelabs/proxy-wasm-go-sdk v0.24.0
 	github.com/tetratelabs/wazero v1.12.0
 	github.com/tidwall/gjson v1.19.0
+	github.com/wasilibs/nottinygc v0.7.1
 )
 
 require (
@@ -25,7 +26,6 @@ require (
 	github.com/wasilibs/go-aho-corasick v0.6.0 // indirect
 	github.com/wasilibs/go-libinjection v0.5.0 // indirect
 	github.com/wasilibs/go-re2 v1.7.0 // indirect
-	github.com/wasilibs/nottinygc v0.7.1 // indirect
 	github.com/wasilibs/wazero-helpers v0.0.0-20250123031827-cd30c44769bb // indirect
 	go.yaml.in/yaml/v3 v3.0.5 // indirect
 	golang.org/x/mod v0.41.0 // indirect

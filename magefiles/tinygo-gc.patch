@@ -1,0 +1,368 @@
+diff --git a/goenv/version.go b/goenv/version.go
+index 72a3a58..77b5226 100644
+--- a/goenv/version.go
++++ b/goenv/version.go
+@@ -10,7 +10,7 @@ import (
+ 
+ // Version of TinyGo.
+ // Update this value before release of new version of software.
+-const version = "0.41.1"
++const version = "0.41.1-d5c-gc5751"
+ 
+ // Return TinyGo version, either in the form 0.30.0 or as a development version
+ // (like 0.30.0-dev-abcd012).
+diff --git a/testdata/gc-liveness-repro.go b/testdata/gc-liveness-repro.go
+new file mode 100644
+index 0000000..7d02b09
+--- /dev/null
++++ b/testdata/gc-liveness-repro.go
+@@ -0,0 +1,87 @@
++// A pointer that is live in a frame is not necessarily rooted by that frame.
++//
++// This is the loop shape from encoding/hex.TestDumper. The dumper reaches the
++// loop header from the preheader and the error returned by Write reaches it
++// from the latch, so SimplifyCFG merges the two runtime.trackPointer calls
++// into one taking a phi. The single slot that results only roots whichever of
++// the two the current iteration selected, so on the back edge the dumper is
++// unrooted and the runtime.GC in Write is free to sweep it. scratch is an
++// array of the same type, so a dumper freed while in use is handed back out
++// and overwritten rather than left intact by luck.
++//
++// Three details keep the dumper reachable only through that slot, and removing
++// any of them disarms the test rather than failing it: newDumper must stay out
++// of line, or its own frame roots the dumper too; it must return an interface,
++// so the value tracked is the extracted data pointer and not the allocation;
++// and Write must allocate, so a collection can land inside it.
++//
++// This only fails at -opt=z, which is what TestBuild uses. At -opt=0, -opt=1,
++// -opt=2 and -opt=s there is no signal at all, so a failure here is not
++// something an optimisation level change fixes.
++package main
++
++import "runtime"
++
++const magic = 0x5a5a5a5a
++
++type writer interface {
++	Write([]byte) (int, error)
++}
++
++type dumper struct {
++	w     writer
++	magic uint32
++	buf   [4]byte
++	used  int
++}
++
++var scratch [64]*dumper
++
++//go:noinline
++func newDumper(w writer) writer {
++	return &dumper{w: w, magic: magic}
++}
++
++//go:noinline
++func (d *dumper) Write(p []byte) (n int, err error) {
++	runtime.GC()
++	for i := range scratch {
++		scratch[i] = &dumper{magic: 0xffffffff}
++	}
++	if d.magic != magic {
++		println("magic", d.magic, "want", uint32(magic))
++		panic("live object was collected")
++	}
++	for _, b := range p {
++		d.buf[0] = b
++		_, err = d.w.Write(d.buf[:1])
++		if err != nil {
++			return
++		}
++		d.used++
++		n++
++	}
++	return
++}
++
++type collector struct {
++	used int
++}
++
++func (c *collector) Write(p []byte) (int, error) {
++	c.used += len(p)
++	return len(p), nil
++}
++
++func main() {
++	var input [40]byte
++	c := &collector{}
++	d := newDumper(c)
++	for i := range input {
++		d.Write(input[i : i+1])
++	}
++	if d.(*dumper).used != len(input) || c.used != len(input) {
++		panic("wrong output")
++	}
++	println("ok")
++}
+diff --git a/testdata/gc-liveness-repro.txt b/testdata/gc-liveness-repro.txt
+new file mode 100644
+index 0000000..9766475
+--- /dev/null
++++ b/testdata/gc-liveness-repro.txt
+@@ -0,0 +1 @@
++ok
+diff --git a/transform/gc.go b/transform/gc.go
+index abbe3cb..7fb1bd5 100644
+--- a/transform/gc.go
++++ b/transform/gc.go
+@@ -154,6 +154,7 @@ func MakeGCStackSlots(mod llvm.Module) bool {
+ 
+ 		// Determine what to do with each call.
+ 		var pointers []llvm.Value
++		var cyclicPHIs []llvm.Value
+ 		for _, call := range calls {
+ 			ptr := call.Operand(0)
+ 			call.EraseFromParentAsInstruction()
+@@ -183,8 +184,14 @@ func MakeGCStackSlots(mod llvm.Module) bool {
+ 					continue
+ 				}
+ 			case llvm.PHI:
+-				// While the value may have already been tracked, it may be overwritten in a loop.
+-				// Therefore, a second copy must be created to ensure that it is tracked over the entirety of its lifetime.
++				// A phi gets a slot of its own because its value can change,
++				// so tracking an input instead is not enough. A phi that can
++				// be re-evaluated has its slot overwritten on the way round
++				// and so only roots the value the current iteration selected,
++				// so remember it and give its inputs slots below.
++				if blockInCycle(ptr.InstructionParent()) {
++					cyclicPHIs = append(cyclicPHIs, ptr)
++				}
+ 			case llvm.ExtractValue, llvm.BitCast:
+ 				// These instructions do not create new values, but their
+ 				// original value may not be tracked. So keep tracking them for
+@@ -208,6 +215,57 @@ func MakeGCStackSlots(mod llvm.Module) bool {
+ 			pointers = append(pointers, ptr)
+ 		}
+ 
++		// Give every input of a tracked phi that can repeat a slot of its own.
++		// SimplifyCFG may have merged the trackPointer calls of two unrelated
++		// pointers into a single call on this phi, leaving whichever pointer
++		// the phi did not select unrooted while it is still live.
++		//
++		// Inputs are followed through every phi, not only through those that
++		// can be re-evaluated. A merge that runs at most once stores its slot
++		// once and never overwrites it, so it already roots the value the run
++		// selected; following its inputs too is conservative and costs a slot.
++		//
++		// Inputs are also not screened by the non-zero-offset GEP rule the
++		// loop above applies, so an interior pointer whose base is already
++		// tracked can pick up a slot of its own. That is another slot rather
++		// than another root, so it is left alone for now.
++		if len(cyclicPHIs) != 0 {
++			rooted := make(map[llvm.Value]struct{}, len(pointers))
++			for _, ptr := range pointers {
++				rooted[ptr] = struct{}{}
++			}
++			expanded := make(map[llvm.Value]struct{}, len(cyclicPHIs))
++			worklist := append([]llvm.Value(nil), cyclicPHIs...)
++			for len(worklist) != 0 {
++				phi := worklist[len(worklist)-1]
++				worklist = worklist[:len(worklist)-1]
++				if _, ok := expanded[phi]; ok {
++					// Phis can be cyclic, so only expand each one once.
++					continue
++				}
++				expanded[phi] = struct{}{}
++				for i := 0; i < phi.IncomingCount(); i++ {
++					incoming := phi.IncomingValue(i)
++					if incoming.IsAInstruction().IsNil() {
++						// Constants and arguments cannot be given a slot here.
++						continue
++					}
++					if incoming.InstructionOpcode() == llvm.PHI {
++						worklist = append(worklist, incoming)
++					}
++					if stripped := stripPointerCasts(incoming); !stripped.IsAAllocaInst().IsNil() {
++						// Allocas live on the C stack, which is scanned separately.
++						continue
++					}
++					if _, ok := rooted[incoming]; ok {
++						continue
++					}
++					rooted[incoming] = struct{}{}
++					pointers = append(pointers, incoming)
++				}
++			}
++		}
++
+ 		if len(pointers) == 0 {
+ 			// This function does not need to keep track of stack pointers.
+ 			continue
+@@ -306,3 +364,37 @@ func markParentFunctions(marked map[llvm.Value]struct{}, fn llvm.Value) {
+ 		}
+ 	}
+ }
++
++// blockInCycle returns whether bb lies on a cycle, that is, whether it is
++// reachable from itself and so can execute more than once per call. This is
++// broader than being a loop header: a merge inside a loop body also qualifies,
++// and its slot is overwritten each iteration just the same.
++func blockInCycle(bb llvm.BasicBlock) bool {
++	// Walk forward from bb and look for an edge back into it.
++	seen := map[llvm.BasicBlock]struct{}{}
++	worklist := []llvm.BasicBlock{bb}
++	for len(worklist) != 0 {
++		cur := worklist[len(worklist)-1]
++		worklist = worklist[:len(worklist)-1]
++		term := cur.LastInstruction()
++		if term.IsNil() {
++			continue
++		}
++		for i := 0; i < term.OperandsCount(); i++ {
++			operand := term.Operand(i)
++			if !operand.IsBasicBlock() {
++				continue
++			}
++			succ := operand.AsBasicBlock()
++			if succ == bb {
++				return true
++			}
++			if _, ok := seen[succ]; ok {
++				continue
++			}
++			seen[succ] = struct{}{}
++			worklist = append(worklist, succ)
++		}
++	}
++	return false
++}
+diff --git a/transform/testdata/gc-stackslots.ll b/transform/testdata/gc-stackslots.ll
+index 58fa3ee..91dd141 100644
+--- a/transform/testdata/gc-stackslots.ll
++++ b/transform/testdata/gc-stackslots.ll
+@@ -87,6 +87,51 @@ end:
+   ret ptr %next.x
+ }
+ 
++; Unlike @allocLoop above, the loop header phi here carries the only marker:
++; neither incoming value is tracked on its own. This is what SimplifyCFG leaves
++; behind when it sinks two runtime.trackPointer calls into a common successor
++; and merges them. A slot for the phi alone roots whichever value the current
++; iteration selected, so %loop.entry and %loop.next each need one too.
++define ptr @loopPhiUntrackedInput(i1 %repeat) {
++entry:
++  %loop.entry = call ptr @runtime.alloc(i32 4, ptr inttoptr (i32 3 to ptr))
++  br label %loop
++
++loop:
++  %loop.cur = phi ptr [ %loop.entry, %entry ], [ %loop.next, %loop ]
++  call void @runtime.trackPointer(ptr %loop.cur)
++  %loop.next = call ptr @runtime.alloc(i32 4, ptr inttoptr (i32 3 to ptr))
++  br i1 %repeat, label %loop, label %end
++
++end:
++  ret ptr %loop.cur
++}
++
++; Nested loops merge the markers through one phi per loop, so the input of the
++; inner phi is the outer phi rather than a plain value. Expanding only the
++; inner one would leave %original unrooted once the outer loop repeats.
++define ptr @nestedLoopPhiUntrackedInput(i1 %repeat.inner, i1 %repeat.outer) {
++entry:
++  %original = call ptr @runtime.alloc(i32 4, ptr inttoptr (i32 3 to ptr))
++  br label %outer
++
++outer:
++  %outer.ptr = phi ptr [ %original, %entry ], [ %inner.ptr, %latch ]
++  br label %inner
++
++inner:
++  %inner.ptr = phi ptr [ %outer.ptr, %outer ], [ %next, %inner ]
++  call void @runtime.trackPointer(ptr %inner.ptr)
++  %next = call ptr @runtime.alloc(i32 4, ptr inttoptr (i32 3 to ptr))
++  br i1 %repeat.inner, label %inner, label %latch
++
++latch:
++  br i1 %repeat.outer, label %outer, label %end
++
++end:
++  ret ptr %original
++}
++
+ declare ptr @arrayAlloc()
+ 
+ define void @testGEPBitcast() {
+diff --git a/transform/testdata/gc-stackslots.out.ll b/transform/testdata/gc-stackslots.out.ll
+index 8a25735..9b5e718 100644
+--- a/transform/testdata/gc-stackslots.out.ll
++++ b/transform/testdata/gc-stackslots.out.ll
+@@ -113,6 +113,69 @@ end:                                              ; preds = %loop
+   ret ptr %next.x
+ }
+ 
++define ptr @loopPhiUntrackedInput(i1 %repeat) {
++entry:
++  %gc.stackobject = alloca { ptr, i32, ptr, ptr, ptr }, align 8
++  store { ptr, i32, ptr, ptr, ptr } { ptr null, i32 3, ptr null, ptr null, ptr null }, ptr %gc.stackobject, align 4
++  %0 = load ptr, ptr @runtime.stackChainStart, align 4
++  %1 = getelementptr { ptr, i32, ptr, ptr, ptr }, ptr %gc.stackobject, i32 0, i32 0
++  store ptr %0, ptr %1, align 4
++  store ptr %gc.stackobject, ptr @runtime.stackChainStart, align 4
++  %loop.entry = call ptr @runtime.alloc(i32 4, ptr inttoptr (i32 3 to ptr))
++  %2 = getelementptr { ptr, i32, ptr, ptr, ptr }, ptr %gc.stackobject, i32 0, i32 3
++  store ptr %loop.entry, ptr %2, align 4
++  br label %loop
++
++loop:                                             ; preds = %loop, %entry
++  %loop.cur = phi ptr [ %loop.entry, %entry ], [ %loop.next, %loop ]
++  %3 = getelementptr { ptr, i32, ptr, ptr, ptr }, ptr %gc.stackobject, i32 0, i32 2
++  store ptr %loop.cur, ptr %3, align 4
++  %loop.next = call ptr @runtime.alloc(i32 4, ptr inttoptr (i32 3 to ptr))
++  %4 = getelementptr { ptr, i32, ptr, ptr, ptr }, ptr %gc.stackobject, i32 0, i32 4
++  store ptr %loop.next, ptr %4, align 4
++  br i1 %repeat, label %loop, label %end
++
++end:                                              ; preds = %loop
++  store ptr %0, ptr @runtime.stackChainStart, align 4
++  ret ptr %loop.cur
++}
++
++define ptr @nestedLoopPhiUntrackedInput(i1 %repeat.inner, i1 %repeat.outer) {
++entry:
++  %gc.stackobject = alloca { ptr, i32, ptr, ptr, ptr, ptr }, align 8
++  store { ptr, i32, ptr, ptr, ptr, ptr } { ptr null, i32 4, ptr null, ptr null, ptr null, ptr null }, ptr %gc.stackobject, align 4
++  %0 = load ptr, ptr @runtime.stackChainStart, align 4
++  %1 = getelementptr { ptr, i32, ptr, ptr, ptr, ptr }, ptr %gc.stackobject, i32 0, i32 0
++  store ptr %0, ptr %1, align 4
++  store ptr %gc.stackobject, ptr @runtime.stackChainStart, align 4
++  %original = call ptr @runtime.alloc(i32 4, ptr inttoptr (i32 3 to ptr))
++  %2 = getelementptr { ptr, i32, ptr, ptr, ptr, ptr }, ptr %gc.stackobject, i32 0, i32 5
++  store ptr %original, ptr %2, align 4
++  br label %outer
++
++outer:                                            ; preds = %latch, %entry
++  %outer.ptr = phi ptr [ %original, %entry ], [ %inner.ptr, %latch ]
++  %3 = getelementptr { ptr, i32, ptr, ptr, ptr, ptr }, ptr %gc.stackobject, i32 0, i32 3
++  store ptr %outer.ptr, ptr %3, align 4
++  br label %inner
++
++inner:                                            ; preds = %inner, %outer
++  %inner.ptr = phi ptr [ %outer.ptr, %outer ], [ %next, %inner ]
++  %4 = getelementptr { ptr, i32, ptr, ptr, ptr, ptr }, ptr %gc.stackobject, i32 0, i32 2
++  store ptr %inner.ptr, ptr %4, align 4
++  %next = call ptr @runtime.alloc(i32 4, ptr inttoptr (i32 3 to ptr))
++  %5 = getelementptr { ptr, i32, ptr, ptr, ptr, ptr }, ptr %gc.stackobject, i32 0, i32 4
++  store ptr %next, ptr %5, align 4
++  br i1 %repeat.inner, label %inner, label %latch
++
++latch:                                            ; preds = %inner
++  br i1 %repeat.outer, label %outer, label %end
++
++end:                                              ; preds = %latch
++  store ptr %0, ptr @runtime.stackChainStart, align 4
++  ret ptr %original
++}
++
+ declare ptr @arrayAlloc()
+ 
+ define void @testGEPBitcast() {

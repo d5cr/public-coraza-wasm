@@ -6,6 +6,7 @@ package main
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -26,6 +27,21 @@ func TestMinimumVersionComparison(t *testing.T) {
 			err := checkVersion("go", "1.27.1")
 			if (err == nil) != tc.accept {
 				t.Fatalf("version %s: accept=%v, error=%v", tc.version, tc.accept, err)
+			}
+		})
+	}
+}
+
+func TestBuildRejectsAffectedCompiler(t *testing.T) {
+	for _, version := range []string{"0.41.0", "0.41.1", "0.43.0-dev-881da3ee"} {
+		t.Run(version, func(t *testing.T) {
+			bin := t.TempDir()
+			if err := os.WriteFile(filepath.Join(bin, "tinygo"), []byte("#!/bin/sh\nprintf 'tinygo version "+version+" linux/amd64\\n'\n"), 0700); err != nil {
+				t.Fatal(err)
+			}
+			t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
+			if err := Build(); err == nil || !strings.Contains(err.Error(), "build requires TinyGo "+requiredTinygoVersion) {
+				t.Fatalf("expected compiler rejection, got %v", err)
 			}
 		})
 	}

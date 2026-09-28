@@ -5,7 +5,11 @@
 
 package main
 
-import "unsafe"
+import (
+	"unsafe"
+
+	_ "github.com/wasilibs/nottinygc"
+)
 
 // Some host functions that are not implemented by Envoy end up getting imported anyways
 // by code that gets compiled but not executed at runtime. Because we know they are not

@@ -20,7 +20,10 @@ import (
 )
 
 var minGoVersion = "1.26.8"
-var minTinygoVersion = "0.41.0"
+var minTinygoVersion = "0.41.1"
+
+const requiredTinygoVersion = "0.41.1-d5c-gc5751"
+
 var addLicenseVersion = "v1.2.0" // https://github.com/google/addlicense
 var golangCILintVer = "v2.14.0"  // https://github.com/golangci/golangci-lint/releases
 var gosImportsVer = "v0.3.8"     // https://github.com/rinchsan/gosimports/releases/tag/v0.3.1
@@ -186,11 +189,21 @@ func Check() {
 
 // Build builds the Coraza wasm plugin.
 func Build() error {
+	version, err := sh.Output("tinygo", "version")
+	if err != nil {
+		return err
+	}
+	// Older compilers can collect live loop pointers (TinyGo issue 5742).
+	if !strings.HasPrefix(version, "tinygo version "+requiredTinygoVersion+" ") {
+		return fmt.Errorf("build requires TinyGo %s with the GC liveness repair, have %q", requiredTinygoVersion, version)
+	}
 	if err := os.MkdirAll("build", 0755); err != nil {
 		return err
 	}
 
 	buildTags := []string{
+		"custommalloc",
+		"nottinygc_envoy",
 		"no_fs_access", // https://github.com/corazawaf/coraza#build-tags
 	}
 	// By default multiphase evaluation is enabled
@@ -220,7 +233,7 @@ func Build() error {
 		"build",
 		// Proxy-Wasm keeps calling exports after main returns.
 		"-buildmode=wasi-legacy",
-		"-gc=precise",
+		"-gc=custom",
 		"-opt=2",
 		"-o", filepath.Join("build", "mainraw.wasm"),
 		"-scheduler=none",
