@@ -72,3 +72,19 @@ func TestRetrieveAddressInfo(t *testing.T) {
 		})
 	}
 }
+
+func TestBodylessRequestPhase2BeforeForwarding(t *testing.T) {
+	for _, method := range []string{"GET", "HEAD", "POST"} {
+		t.Run(method, func(t *testing.T) {
+			host := decisionHost(t, false, "SecRuleEngine On", `SecAction "id:190099,phase:2,deny,status:403"`)
+			id := host.InitializeHttpContext()
+			require.NoError(t, host.SetProperty([]string{"request", "protocol"}, []byte("HTTP/2.0")))
+			action := host.CallOnRequestHeaders(id, [][2]string{{":authority", "example.com"}, {":method", method}, {":path", "/"}, {"content-length", "0"}}, true)
+			require.Equal(t, types.ActionPause, action)
+			response := host.GetSentLocalResponse(id)
+			require.NotNil(t, response, "deny must precede any upstream response")
+			require.Equal(t, uint32(403), response.StatusCode)
+			host.CompleteHttpContext(id)
+		})
+	}
+}
