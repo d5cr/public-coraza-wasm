@@ -196,7 +196,11 @@ func TestDecisionHeaderEnvoy(t *testing.T) {
 		{"/api", `{"q":"<script>alert(1)</script>"}`, true},
 		{"/stream", "", false},
 	} {
-		t.Run(tc.path, func(t *testing.T) {
+		name := tc.path
+		if tc.path == "/" {
+			name = "startup"
+		}
+		t.Run(name, func(t *testing.T) {
 			before := calls.Load()
 			method := "GET"
 			if tc.body != "" {
