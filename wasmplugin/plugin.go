@@ -231,6 +231,7 @@ type httpContext struct {
 	types.DefaultHttpContext
 	contextID                uint32
 	decisionAEAD             cipher.AEAD
+	decisionToken            string
 	perAuthorityWAFs         wafMap
 	tx                       ctypes.Transaction
 	httpProtocol             string
@@ -562,6 +563,11 @@ func (ctx *httpContext) OnHttpResponseBody(bodySize int, endOfStream bool) types
 	defer logTime("OnHttpResponseBody", currentTime())
 
 	if ctx.interruptedAt.isInterrupted() {
+		if ctx.interruptedAt != interruptionPhaseHttpResponseBody {
+			// Earlier interruptions replaced the response with our local reply.
+			// Its diagnostic body is safe to send unchanged.
+			return types.ActionContinue
+		}
 		// At response body phase, proxy-wasm currently relies on emptying the response body as a way of
 		// interruption the response. See https://github.com/corazawaf/coraza-proxy-wasm/issues/26.
 		// If OnHttpResponseBody is called again and an interruption has already been raised, it means that
@@ -739,10 +745,16 @@ func (ctx *httpContext) handleInterruption(phase interruptionPhase, interruption
 		statusCode = defaultInterruptionStatusCode
 	}
 	var headers [][2]string
+	var body []byte
 	if ctx.decisionAEAD != nil {
-		headers = [][2]string{{decisionHeader, ctx.encryptedDecision()}}
+		token := ctx.encryptedDecision()
+		headers = [][2]string{{decisionHeader, token}}
+		if statusCode == http.StatusForbidden {
+			headers = append(headers, [2]string{"content-type", "text/plain; charset=utf-8"}, [2]string{"cache-control", "no-store"})
+			body = []byte("403 FIREWALL " + token + " IF UNEXPECTED FORWARD TO security@d-roy.ca\n")
+		}
 	}
-	if err := proxywasm.SendHttpResponse(uint32(statusCode), headers, nil, noGRPCStream); err != nil {
+	if err := proxywasm.SendHttpResponse(uint32(statusCode), headers, body, noGRPCStream); err != nil {
 		panic(err)
 	}
 
