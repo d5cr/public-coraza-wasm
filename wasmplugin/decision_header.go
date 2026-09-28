@@ -38,7 +38,9 @@ func (ctx *httpContext) requestDecision() string {
 	blocked, score, ruleID := 0, 0, 0
 	if ctx.interruptedAt == interruptionPhaseHttpRequestHeaders || ctx.interruptedAt == interruptionPhaseHttpRequestBody {
 		blocked = 1
-		ruleID = ctx.tx.Interruption().RuleID
+		if interruption := ctx.tx.Interruption(); interruption != nil {
+			ruleID = interruption.RuleID
+		}
 	}
 	vars := ctx.tx.(plugintypes.TransactionState).Variables().TX()
 	level := 1

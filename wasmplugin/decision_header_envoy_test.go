@@ -75,7 +75,7 @@ func TestDecisionHeaderEnvoy(t *testing.T) {
 	config, err := json.Marshal(map[string]interface{}{
 		"encrypted_decision_header": true,
 		"default_directives":        "default",
-		"per_authority_directives":  map[string]string{"phase2.example.com": "bodyless", "response.example.com": "response"},
+		"per_authority_directives":  map[string]string{"phase2.example.com": "bodyless", "response.example.com": "response", "write-error.example.com": "write-error"},
 		"directives_map": map[string][]string{"default": {
 			"Include @recommended-conf", "SecRuleEngine On", "SecResponseBodyAccess Off", "Include @crs-setup-conf",
 			`SecAction "id:100000,phase:1,pass,nolog,setvar:tx.blocking_paranoia_level=2,setvar:tx.early_blocking=1"`,
@@ -88,6 +88,9 @@ func TestDecisionHeaderEnvoy(t *testing.T) {
 			"SecRuleEngine On", "SecRequestBodyAccess On", "SecRequestBodyLimit 6", "SecRequestBodyLimitAction ProcessPartial",
 			"SecResponseBodyAccess On", "SecResponseBodyMimeType text/plain",
 			`SecRule RESPONSE_BODY "@beginsWith upstream" "id:190003,phase:4,deny,status:403"`,
+		}, "write-error": {
+			"Include @recommended-conf", "SecRuleEngine On", "SecRequestBodyLimit 1024", "SecRequestBodyInMemoryLimit 2", "SecResponseBodyAccess Off",
+			`SecRule ARGS:q "@contains attack" "id:190103,phase:2,deny,status:403"`,
 		}},
 	})
 	require.NoError(t, err)
@@ -248,6 +251,19 @@ func TestDecisionHeaderEnvoy(t *testing.T) {
 		require.NoError(t, err)
 		require.Equal(t, http.StatusOK, response.StatusCode)
 		require.Equal(t, bytes.Repeat([]byte{0}, len("upstream")), body)
+	})
+	t.Run("request body write error", func(t *testing.T) {
+		before := calls.Load()
+		request, err := http.NewRequest(http.MethodPost, base+"/", strings.NewReader("q=attack"))
+		require.NoError(t, err)
+		request.Host = "write-error.example.com"
+		request.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+		response, err := client.Do(request)
+		require.NoError(t, err)
+		defer response.Body.Close()
+		require.Equal(t, http.StatusInternalServerError, response.StatusCode)
+		require.Equal(t, "v1;b=1;s=0;r=0", openDecision(t, response.Header.Get(decisionHeader)))
+		require.Equal(t, before, calls.Load(), "uninspected request completed upstream")
 	})
 
 }

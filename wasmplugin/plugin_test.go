@@ -5,6 +5,8 @@ package wasmplugin
 
 import (
 	"bytes"
+	"encoding/binary"
+	"os"
 	"testing"
 
 	"github.com/corazawaf/coraza/v3/debuglog"
@@ -113,6 +115,71 @@ func TestResponseBodyAfterPartialRequest(t *testing.T) {
 				expected = bytes.Repeat([]byte{0}, len(tc.response))
 			}
 			require.Equal(t, expected, host.GetCurrentResponseBody(id))
+			host.CompleteHttpContext(id)
+		})
+	}
+}
+
+func TestInspectionMetadataFailure(t *testing.T) {
+	t.Setenv("CORAZA_WAF_HEADER_KEY", testDecisionKey)
+	for _, missing := range []string{":authority", ":method", ":path"} {
+		t.Run(missing, func(t *testing.T) {
+			host := decisionHost(t, true, "SecRuleEngine On")
+			id := host.InitializeHttpContext()
+			headers := [][2]string{}
+			for _, h := range [][2]string{{":authority", "example.com"}, {":method", "GET"}, {":path", "/"}} {
+				if h[0] != missing {
+					headers = append(headers, h)
+				}
+			}
+			require.Equal(t, types.ActionPause, host.CallOnRequestHeaders(id, headers, true))
+			response := host.GetSentLocalResponse(id)
+			require.NotNil(t, response)
+			require.Equal(t, uint32(500), response.StatusCode)
+			if missing != ":authority" {
+				require.Equal(t, "v1;b=1;s=0;r=0", openDecision(t, headerValue(t, response.Headers)))
+			}
+			host.CallOnResponseHeaders(id, response.Headers, true)
+			host.CompleteHttpContext(id)
+		})
+	}
+}
+
+func TestRequestBodyWriteFailure(t *testing.T) {
+	t.Setenv("CORAZA_WAF_HEADER_KEY", testDecisionKey)
+	// Remove a valid spill directory after configuration validation to force
+	// a real native buffer failure. Wasm rejects this at its memory limit.
+	spillDir := t.TempDir()
+	t.Setenv("TMPDIR", spillDir)
+	host := decisionHost(t, true, "SecRuleEngine On", "SecRequestBodyAccess On", "SecRequestBodyLimit 1024", "SecRequestBodyInMemoryLimit 2")
+	require.NoError(t, os.Remove(spillDir))
+	id := decisionRequest(t, host, "/", []byte(`{"q":"attack"}`))
+	response := host.GetSentLocalResponse(id)
+	require.NotNil(t, response)
+	require.Equal(t, uint32(500), response.StatusCode)
+	require.Equal(t, "v1;b=1;s=0;r=0", openDecision(t, headerValue(t, response.Headers)))
+	host.CompleteHttpContext(id)
+}
+
+func TestResponseCodeProperty(t *testing.T) {
+	for _, invalid := range []bool{false, true} {
+		t.Run(map[bool]string{false: "serialized integer", true: "malformed property"}[invalid], func(t *testing.T) {
+			host := decisionHost(t, false, "SecRuleEngine On", `SecRule RESPONSE_STATUS "@streq 418" "id:190104,phase:3,deny,status:403"`)
+			id := decisionRequest(t, host, "/", nil)
+			code := make([]byte, 8)
+			binary.LittleEndian.PutUint64(code, 418)
+			if invalid {
+				code = []byte("418")
+			}
+			require.NoError(t, host.SetProperty([]string{"response", "code"}, code))
+			require.Equal(t, types.ActionPause, host.CallOnResponseHeaders(id, nil, true))
+			response := host.GetSentLocalResponse(id)
+			require.NotNil(t, response)
+			status := uint32(403)
+			if invalid {
+				status = 500
+			}
+			require.Equal(t, status, response.StatusCode)
 			host.CompleteHttpContext(id)
 		})
 	}

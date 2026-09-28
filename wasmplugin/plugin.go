@@ -189,6 +189,7 @@ func (ctx *corazaPlugin) OnPluginStart(pluginConfigurationSize int) types.OnPlug
 func (ctx *corazaPlugin) NewHttpContext(contextID uint32) types.HttpContext {
 	return &httpContext{
 		contextID:        contextID,
+		logger:           debuglog.Noop(),
 		decisionAEAD:     ctx.decisionAEAD,
 		metrics:          ctx.metrics,
 		metricLabelsKV:   ctx.metricLabelsKV,
@@ -261,7 +262,7 @@ func (ctx *httpContext) OnHttpRequestHeaders(numHeaders int, endOfStream bool) t
 		propHostRaw, propHostErr := proxywasm.GetProperty([]string{"request", "host"})
 		if propHostErr != nil {
 			proxywasm.LogWarnf("Failed to get the :authority pseudo-header or property of host of the request: %v", propHostErr)
-			return types.ActionContinue
+			return ctx.failInspection(interruptionPhaseHttpRequestHeaders)
 		}
 		authority = string(propHostRaw)
 	}
@@ -283,7 +284,7 @@ func (ctx *httpContext) OnHttpRequestHeaders(numHeaders int, endOfStream bool) t
 		}
 	} else {
 		proxywasm.LogWarnf("Failed to resolve WAF for authority %q: %v", authority, resolveWAFErr)
-		return types.ActionContinue
+		return ctx.failInspection(interruptionPhaseHttpRequestHeaders)
 	}
 
 	tx := ctx.tx
@@ -311,7 +312,7 @@ func (ctx *httpContext) OnHttpRequestHeaders(numHeaders int, endOfStream bool) t
 			ctx.logger.Error().
 				Err(propMethodErr).
 				Msg("Failed to get property of method of the request")
-			return types.ActionContinue
+			return ctx.failInspection(interruptionPhaseHttpRequestHeaders)
 		}
 		method = string(propMethodRaw)
 	}
@@ -333,7 +334,7 @@ func (ctx *httpContext) OnHttpRequestHeaders(numHeaders int, endOfStream bool) t
 				ctx.logger.Error().
 					Err(propPathErr).
 					Msg("Failed to get property of path of the request")
-				return types.ActionContinue
+				return ctx.failInspection(interruptionPhaseHttpRequestHeaders)
 			}
 			uri = string(propPathRaw)
 		}
@@ -353,7 +354,7 @@ func (ctx *httpContext) OnHttpRequestHeaders(numHeaders int, endOfStream bool) t
 	hs, err := proxywasm.GetHttpRequestHeaders()
 	if err != nil {
 		ctx.logger.Error().Err(err).Msg("Failed to get request headers")
-		return types.ActionContinue
+		return ctx.failInspection(interruptionPhaseHttpRequestHeaders)
 	}
 
 	for _, h := range hs {
@@ -405,7 +406,7 @@ func (ctx *httpContext) OnHttpRequestBody(bodySize int, endOfStream bool) types.
 		interruption, err := tx.ProcessRequestBody()
 		if err != nil {
 			ctx.logger.Error().Err(err).Msg("Failed to process request body")
-			return types.ActionContinue
+			return ctx.failInspection(interruptionPhaseHttpRequestBody)
 		}
 
 		if interruption != nil {
@@ -426,16 +427,17 @@ func (ctx *httpContext) OnHttpRequestBody(bodySize int, endOfStream bool) types.
 				Int("body_read_index", ctx.bodyReadIndex).
 				Int("chunk_size", chunkSize).
 				Msg("Failed to read request body")
-			return types.ActionContinue
+			return ctx.failInspection(interruptionPhaseHttpRequestBody)
 		}
 		readchunkSize := len(bodyChunk)
 		if readchunkSize != chunkSize {
-			ctx.logger.Warn().Int("read_chunk_size", readchunkSize).Int("chunk_size", chunkSize).Msg("Request chunk size read is different from the computed one")
+			ctx.logger.Error().Int("read_chunk_size", readchunkSize).Int("chunk_size", chunkSize).Msg("Request chunk size read is different from the computed one")
+			return ctx.failInspection(interruptionPhaseHttpRequestBody)
 		}
 		interruption, writtenBytes, err := tx.WriteRequestBody(bodyChunk)
 		if err != nil {
 			ctx.logger.Error().Err(err).Msg("Failed to write request body")
-			return types.ActionContinue
+			return ctx.failInspection(interruptionPhaseHttpRequestBody)
 		}
 		if interruption != nil {
 			return ctx.handleInterruption(interruptionPhaseHttpRequestBody, interruption)
@@ -461,7 +463,7 @@ func (ctx *httpContext) OnHttpRequestBody(bodySize int, endOfStream bool) types.
 			ctx.logger.Error().
 				Err(err).
 				Msg("Failed to process request body")
-			return types.ActionContinue
+			return ctx.failInspection(interruptionPhaseHttpRequestBody)
 		}
 		if interruption != nil {
 			return ctx.handleInterruption(interruptionPhaseHttpRequestBody, interruption)
@@ -517,7 +519,7 @@ func (ctx *httpContext) OnHttpResponseHeaders(numHeaders int, endOfStream bool) 
 		if err != nil {
 			ctx.logger.Error().
 				Err(err).Msg("Failed to process request body")
-			return types.ActionContinue
+			return ctx.failInspection(interruptionPhaseHttpRequestBody)
 		}
 		if interruption != nil {
 			return ctx.handleInterruption(interruptionPhaseHttpRequestBody, interruption)
@@ -538,13 +540,19 @@ func (ctx *httpContext) OnHttpResponseHeaders(numHeaders int, endOfStream bool) 
 			ctx.logger.Error().
 				Err(propCodeErr).
 				Msg("Failed to get property of code of the response")
-			return types.ActionContinue
+			return ctx.failInspection(interruptionPhaseHttpResponseHeaders)
 		}
-		status = string(propCodeRaw)
+		// Envoy serializes integer properties as little-endian uint64 values.
+		if len(propCodeRaw) != 8 {
+			ctx.logger.Error().Msg("Invalid response code property")
+			return ctx.failInspection(interruptionPhaseHttpResponseHeaders)
+		}
+		status = strconv.FormatUint(binary.LittleEndian.Uint64(propCodeRaw), 10)
 	}
 	code, err := strconv.Atoi(status)
-	if err != nil {
-		code = 0
+	if err != nil || code < 100 || code > 599 {
+		ctx.logger.Error().Err(err).Msg("Invalid response status")
+		return ctx.failInspection(interruptionPhaseHttpResponseHeaders)
 	}
 
 	hs, err := proxywasm.GetHttpResponseHeaders()
@@ -552,7 +560,7 @@ func (ctx *httpContext) OnHttpResponseHeaders(numHeaders int, endOfStream bool) 
 		ctx.logger.Error().
 			Err(err).
 			Msg("Failed to get response headers")
-		return types.ActionContinue
+		return ctx.failInspection(interruptionPhaseHttpResponseHeaders)
 	}
 
 	for _, h := range hs {
@@ -613,7 +621,8 @@ func (ctx *httpContext) OnHttpResponseBody(bodySize int, endOfStream bool) types
 			interruption, err := tx.ProcessResponseBody()
 			if err != nil {
 				ctx.logger.Error().Err(err).Msg("Failed to process response body")
-				return types.ActionContinue
+				ctx.bodyReadIndex = bodySize
+				return ctx.failInspection(interruptionPhaseHttpResponseBody)
 			}
 			ctx.processedResponseBody = true
 			if interruption != nil {
@@ -636,17 +645,21 @@ func (ctx *httpContext) OnHttpResponseBody(bodySize int, endOfStream bool) types
 				Int("chunk_size", chunkSize).
 				Err(err).
 				Msg("Failed to read response body")
-			return types.ActionContinue
+			ctx.bodyReadIndex = bodySize
+			return ctx.failInspection(interruptionPhaseHttpResponseBody)
 		}
 
 		readchunkSize := len(bodyChunk)
 		if readchunkSize != chunkSize {
-			ctx.logger.Warn().Int("read_chunk_size", readchunkSize).Int("chunk_size", chunkSize).Msg("Response chunk size read is different from the computed one")
+			ctx.logger.Error().Int("read_chunk_size", readchunkSize).Int("chunk_size", chunkSize).Msg("Response chunk size read is different from the computed one")
+			ctx.bodyReadIndex = bodySize
+			return ctx.failInspection(interruptionPhaseHttpResponseBody)
 		}
 		interruption, writtenBytes, err := tx.WriteResponseBody(bodyChunk)
 		if err != nil {
 			ctx.logger.Error().Err(err).Msg("Failed to write response body")
-			return types.ActionContinue
+			ctx.bodyReadIndex = bodySize
+			return ctx.failInspection(interruptionPhaseHttpResponseBody)
 		}
 		// bodyReadIndex has to be updated before evaluating the interruption
 		// it is internally needed to replace the full body if the transaction is interrupted
@@ -673,7 +686,8 @@ func (ctx *httpContext) OnHttpResponseBody(bodySize int, endOfStream bool) types
 			ctx.logger.Error().
 				Err(err).
 				Msg("Failed to process response body")
-			return types.ActionContinue
+			ctx.bodyReadIndex = bodySize
+			return ctx.failInspection(interruptionPhaseHttpResponseBody)
 		}
 		if interruption != nil {
 			return ctx.handleInterruption(interruptionPhaseHttpResponseBody, interruption)
@@ -731,6 +745,12 @@ func (ctx *httpContext) OnHttpStreamDone() {
 const noGRPCStream int32 = -1
 const defaultInterruptionStatusCode int = 403
 
+// Inspection errors must not be interpreted as a clean WAF decision. Request
+// failures stop forwarding; response-body failures sanitize the remaining body.
+func (ctx *httpContext) failInspection(phase interruptionPhase) types.Action {
+	return ctx.handleInterruption(phase, &ctypes.Interruption{Status: http.StatusInternalServerError, Action: "deny"})
+}
+
 func (ctx *httpContext) handleInterruption(phase interruptionPhase, interruption *ctypes.Interruption) types.Action {
 	if ctx.interruptedAt.isInterrupted() {
 		// handleInterruption should never be called more than once
@@ -755,7 +775,7 @@ func (ctx *httpContext) handleInterruption(phase interruptionPhase, interruption
 	}
 	var headers [][2]string
 	var body []byte
-	if ctx.decisionAEAD != nil {
+	if ctx.decisionAEAD != nil && ctx.tx != nil {
 		token := ctx.encryptedDecision()
 		headers = [][2]string{{decisionHeader, token}}
 		if statusCode == http.StatusForbidden {
@@ -864,7 +884,9 @@ func replaceResponseBodyWhenInterrupted(logger debuglog.Logger, bodySize int) ty
 	err := proxywasm.ReplaceHttpResponseBody(bytes.Repeat([]byte("\x00"), bodySize))
 	if err != nil {
 		logger.Error().Err(err).Msg("Failed to replace response body")
-		return types.ActionContinue
+		// A failed replacement leaves forbidden bytes in the host buffer.
+		// Trap so a fail-closed host resets the stream instead of leaking them.
+		panic("WAF response sanitization failed")
 	}
 	logger.Warn().Msg("Response body intervention occurred: body replaced")
 	return types.ActionContinue
