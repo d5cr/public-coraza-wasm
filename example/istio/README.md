@@ -194,3 +194,7 @@ cannot replace forbidden response bytes, the plugin traps to stop the stream.
 An authority without a matching or default policy also returns HTTP 500.
 To intentionally allow unmatched authorities without inspection, configure an
 explicit default policy with `SecRuleEngine Off`.
+
+With request-body inspection enabled, the plugin holds request headers until
+inspection completes. Explicit `SecRequestBodyAccess Off` policies still stream
+requests, but evaluate phase 2 before forwarding their headers.

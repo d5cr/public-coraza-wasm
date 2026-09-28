@@ -184,3 +184,28 @@ func TestResponseCodeProperty(t *testing.T) {
 		})
 	}
 }
+
+func TestRequestHeadersWaitForInspection(t *testing.T) {
+	for _, tc := range []struct {
+		name, directive string
+		want            types.Action
+	}{
+		{"body inspection", "SecRequestBodyAccess On", types.ActionPause},
+		{"body inspection disabled", "SecRequestBodyAccess Off", types.ActionContinue},
+		{"engine disabled", "SecRuleEngine Off", types.ActionContinue},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			host := decisionHost(t, false, "SecRuleEngine On", tc.directive)
+			id := host.InitializeHttpContext()
+			require.Equal(t, tc.want, host.CallOnRequestHeaders(id, [][2]string{{":authority", "example.com"}, {":method", "POST"}, {":path", "/"}}, false))
+			host.CompleteHttpContext(id)
+		})
+	}
+	t.Run("phase two with body inspection disabled", func(t *testing.T) {
+		host := decisionHost(t, false, "SecRuleEngine On", "SecRequestBodyAccess Off", `SecAction "id:190105,phase:2,deny,status:403"`)
+		id := host.InitializeHttpContext()
+		require.Equal(t, types.ActionPause, host.CallOnRequestHeaders(id, [][2]string{{":authority", "example.com"}, {":method", "POST"}, {":path", "/"}}, false))
+		require.Equal(t, uint32(403), host.GetSentLocalResponse(id).StatusCode)
+		host.CompleteHttpContext(id)
+	})
+}

@@ -100,7 +100,7 @@ func TestLifecycleMultiPhase(t *testing.T) {
 				{"Content-Length", "25"},
 			},
 			reqBody:           []byte(`animal=bear&animal2=apanda`),
-			requestHdrsAction: types.ActionContinue,
+			requestHdrsAction: types.ActionPause,
 			requestBodyAction: types.ActionPause,
 			responded403:      true,
 		},
@@ -117,7 +117,7 @@ func TestLifecycleMultiPhase(t *testing.T) {
 				{"Content-Length", "5"},
 			},
 			reqBody:           []byte(`panda`),
-			requestHdrsAction: types.ActionContinue,
+			requestHdrsAction: types.ActionPause,
 			requestBodyAction: types.ActionPause,
 			responded403:      true,
 		},
@@ -201,7 +201,7 @@ func TestLifecycleMultiPhase(t *testing.T) {
 
 				// Stream bodies in chunks of 5
 
-				if requestHdrsAction == types.ActionContinue {
+				if host.GetSentLocalResponse(id) == nil {
 					if len(tt.reqBody) == 0 {
 						requestBodyAction = host.CallOnRequestBody(id, []byte(``), true)
 					} else {
