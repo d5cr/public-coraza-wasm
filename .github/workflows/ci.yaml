@@ -22,13 +22,23 @@ env:
     istio/proxyv2:1.30.5
     envoyproxy/envoy:v1.39.1
     envoyproxy/envoy:v1.38.4
-  TINYGO_IMAGE: tinygo/tinygo:0.41.0@sha256:0376cd2d957e7304a1a653e2f7ef44cc27e1caa3a445073dfb09731ad4c19fec
+  BUILD_IMAGE: golang:1.26.8-trixie@sha256:bdca99a00bc16590cb1a0bb4e698f5fc5d6a64e4d5eef13d9f18a0ee08e5fa65
+  LLVM_PACKAGE_VERSION: 1:19.1.7-3+b1
+  BINARYEN_PACKAGE_VERSION: 120-4
+  TINYGO_COMMIT: a4f9c9d1b6703211d20dca57d92c42afa44493cd
+  TINYGO_ARCHIVE_SHA256: e156d1d93a376eef639a4143d13be07e8c463fb6cf2d7d447698ed4474d23e91
 
 jobs:
   verify:
     if: github.repository == 'd5cr/public-coraza-wasm' && !github.event.repository.private
     runs-on: ubuntu-24.04
     timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      matrix:
+        multiphase: [false, true]
+    env:
+      MULTIPHASE_EVAL: ${{ matrix.multiphase }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
@@ -39,57 +49,95 @@ jobs:
             magefiles/go.sum
       - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
-          path: ~/.cache/tinygo
-          key: tinygo-0.41.0-${{ runner.os }}-${{ hashFiles('go.sum', 'magefiles/go.sum') }}
-          restore-keys: tinygo-0.41.0-${{ runner.os }}-
+          path: |
+            ~/.cache/tinygo
+            ~/.cache/coraza-compiler/tinygo
+          key: tinygo-gc5751-${{ runner.os }}-${{ hashFiles('magefiles/tinygo-gc.patch', '.github/workflows/ci.yaml', 'go.sum', 'magefiles/go.sum') }}
       - name: Cache compiled modules by build inputs
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: build/cached-wasm
-          key: wasm-0.41.0-${{ runner.os }}-${{ hashFiles('**/*.go', '**/go.mod', '**/go.sum', 'go.work', 'magefiles/wasip1-envoy.json', 'wasmplugin/rules/**', '.github/workflows/ci.yaml') }}
+          key: wasm-gc5751-${{ runner.os }}-${{ matrix.multiphase }}-${{ hashFiles('**/*.go', '**/go.mod', '**/go.sum', 'go.work', 'magefiles/wasip1-envoy.json', 'magefiles/tinygo-gc.patch', 'wasmplugin/rules/**', '.github/workflows/ci.yaml') }}
       - name: Check formatting
         run: test -z "$(gofmt -l wasmplugin/*.go)"
-      - name: Build and test both evaluation modes
+      - name: Build and test evaluation mode
         shell: bash
         run: |
           set -euo pipefail
-          mkdir -p "$HOME/.cache/tinygo" "$(go env GOPATH)/pkg/mod" "$(go env GOCACHE)"
-          for multiphase in false true; do
-            docker run --rm --user "$(id -u):$(id -g)" \
-              --env MULTIPHASE_EVAL="$multiphase" --env GOFLAGS=-buildvcs=false \
-              --env GOPATH=/go --env GOCACHE=/go-build \
-              --env XDG_CACHE_HOME=/tinygo-cache --env MAGEFILE_CACHE=/go-build/mage \
-              --volume "$PWD:/src" --workdir /src \
-              --volume "$(go env GOPATH)/pkg:/go/pkg" \
-              --volume "$(go env GOCACHE):/go-build" \
-              --volume "$HOME/.cache/tinygo:/tinygo-cache/tinygo" \
-              "$TINYGO_IMAGE" sh -ec '
-                go test ./magefiles/...
-                mkdir -p build/cached-wasm
-                cached="build/cached-wasm/$MULTIPHASE_EVAL"
-                if [ -s "$cached/main.wasm" ] && [ -s "$cached/mainraw.wasm" ]; then
-                  cp "$cached/main.wasm" "$cached/mainraw.wasm" build/
-                else
-                  go run mage.go build
-                  mkdir -p "$cached"
-                  cp build/main.wasm build/mainraw.wasm "$cached/"
-                fi
-              '
-            sha256sum build/main.wasm
-            tags=()
-            if [[ "$multiphase" == true ]]; then tags=(-tags=coraza.rule.multiphase_evaluation); fi
-            go test -failfast "${tags[@]}" ./...
-            # Race-check native code without instrumenting the Wasm interpreter.
-            go test -race "${tags[@]}" ./wasmplugin ./internal/...
-            for image in $ENVOY_IMAGES; do
-              docker pull "$image"
-              ENVOY_IMAGE="$image" go test -tags=envoy ./wasmplugin -run TestDecisionHeaderEnvoy -count=3 -failfast
-            done
+          mkdir -p "$HOME/.cache/tinygo" "$HOME/.cache/coraza-compiler" "$(go env GOPATH)/pkg/mod" "$(go env GOCACHE)"
+          docker run --detach --name coraza-build \
+            --env TINYGO_COMMIT --env TINYGO_ARCHIVE_SHA256 \
+            --env LLVM_PACKAGE_VERSION --env BINARYEN_PACKAGE_VERSION \
+            --env GOFLAGS=-buildvcs=false --env GOPATH=/go --env GOCACHE=/go-build \
+            --env XDG_CACHE_HOME=/tinygo-cache --env MAGEFILE_CACHE=/go-build/mage \
+            --env TINYGOROOT=/compiler/tinygo \
+            --env PATH=/compiler/tinygo/bin:/usr/lib/llvm-19/bin:/usr/local/go/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin \
+            --volume "$PWD:/src" --workdir /src \
+            --volume "$(go env GOPATH)/pkg:/go/pkg" \
+            --volume "$(go env GOCACHE):/go-build" \
+            --volume "$HOME/.cache/tinygo:/tinygo-cache/tinygo" \
+            --volume "$HOME/.cache/coraza-compiler:/compiler" \
+            "$BUILD_IMAGE" sleep infinity
+          trap 'docker rm --force coraza-build' EXIT
+          docker exec coraza-build bash -euo pipefail -c '
+            apt-get update -qq
+            apt-get install -y --no-install-recommends \
+              "clang-19=$LLVM_PACKAGE_VERSION" "llvm-19-dev=$LLVM_PACKAGE_VERSION" \
+              "libclang-19-dev=$LLVM_PACKAGE_VERSION" "lld-19=$LLVM_PACKAGE_VERSION" \
+              "binaryen=$BINARYEN_PACKAGE_VERSION"
+            if [ ! -x /compiler/tinygo/bin/tinygo ]; then
+              rm -rf /compiler/tinygo /compiler/release
+              git init /compiler/tinygo
+              git -C /compiler/tinygo remote add origin https://github.com/tinygo-org/tinygo.git
+              git -C /compiler/tinygo fetch --depth=1 origin "$TINYGO_COMMIT"
+              git -C /compiler/tinygo checkout --detach FETCH_HEAD
+              test "$(git -C /compiler/tinygo rev-parse HEAD)" = "$TINYGO_COMMIT"
+              curl -fL --retry 3 https://github.com/tinygo-org/tinygo/releases/download/v0.41.1/tinygo0.41.1.linux-amd64.tar.gz -o /compiler/release.tar.gz
+              echo "$TINYGO_ARCHIVE_SHA256  /compiler/release.tar.gz" | sha256sum -c -
+              mkdir /compiler/release
+              tar -xzf /compiler/release.tar.gz -C /compiler/release
+              cp -a /compiler/release/tinygo/lib/. /compiler/tinygo/lib/
+              cp -a /compiler/release/tinygo/src/net/. /compiler/tinygo/src/net/
+              git -C /compiler/tinygo apply /src/magefiles/tinygo-gc.patch
+              cd /compiler/tinygo
+              go build -tags=llvm19 -o bin/tinygo .
+            fi
+            cd /compiler/tinygo
+            tinygo version
+            go test -tags=llvm19 ./transform -run TestMakeGCStackSlots -count=1
+            tinygo build -target=wasi -scheduler=none -gc=precise -opt=z -o /compiler/gc-liveness.wasm testdata/gc-liveness-repro.go
+            cd /src
+            go run github.com/tetratelabs/wazero/cmd/wazero@v1.12.0 run /compiler/gc-liveness.wasm > /compiler/gc-liveness.txt 2>&1
+            diff -u /compiler/tinygo/testdata/gc-liveness-repro.txt /compiler/gc-liveness.txt
+          '
+          docker exec --env MULTIPHASE_EVAL="$MULTIPHASE_EVAL" coraza-build sh -ec '
+            go test ./magefiles/... -count=1
+            mkdir -p build/cached-wasm
+            cached="build/cached-wasm/$MULTIPHASE_EVAL"
+            if [ -s "$cached/main.wasm" ] && [ -s "$cached/mainraw.wasm" ]; then
+              cp "$cached/main.wasm" "$cached/mainraw.wasm" build/
+            else
+              go run mage.go build
+              mkdir -p "$cached"
+              cp build/main.wasm build/mainraw.wasm "$cached/"
+            fi
+          '
+          sha256sum build/main.wasm
+          tags=()
+          if [[ "$MULTIPHASE_EVAL" == true ]]; then tags=(-tags=coraza.rule.multiphase_evaluation); fi
+          go test -failfast "${tags[@]}" ./... -count=1
+          # Race-check native code without instrumenting the Wasm interpreter.
+          go test -race "${tags[@]}" ./wasmplugin ./internal/... -count=1
+          # Intermittent initialization panics require repeated fresh VM starts.
+          ENVOY_IMAGE=istio/proxyv2:1.31.1 go test -tags=envoy ./wasmplugin -run '^TestDecisionHeaderEnvoy$/^startup$' -count=100 -failfast -timeout=15m
+          for image in $ENVOY_IMAGES; do
+            docker pull "$image"
+            ENVOY_IMAGE="$image" go test -tags=envoy ./wasmplugin -run TestDecisionHeaderEnvoy -count=3 -failfast
           done
       - name: Check reachable Go vulnerabilities
         run: go run golang.org/x/vuln/cmd/govulncheck@v1.8.0 -tags=coraza.rule.multiphase_evaluation ./wasmplugin ./internal/...
       - name: Retain the verified release module
-        if: github.event_name == 'release'
+        if: github.event_name == 'release' && matrix.multiphase
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: release-wasm
