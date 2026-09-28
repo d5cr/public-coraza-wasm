@@ -144,6 +144,29 @@ func TestDecisionScoreBeforeAggregation(t *testing.T) {
 	}
 }
 
+func TestDecisionSkipsCRSInitialization(t *testing.T) {
+	t.Setenv("CORAZA_WAF_HEADER_KEY", testDecisionKey)
+	for _, path := range []string{"/", "/attack"} {
+		t.Run(path, func(t *testing.T) {
+			host := decisionHost(t, true,
+				"SecRuleEngine On",
+				`SecRule REQUEST_URI "@rx ." "id:901340,phase:1,pass,nolog,msg:'Enabling body inspection',tag:'OWASP_CRS'"`,
+				`SecRule REQUEST_URI "@streq /attack" "id:942100,phase:1,deny,status:403,msg:'SQL Injection',tag:'OWASP_CRS',tag:'paranoia-level/1',setvar:tx.inbound_anomaly_score_pl1=+5"`,
+			)
+			id := decisionRequest(t, host, path, nil)
+			if path == "/attack" {
+				response := host.GetSentLocalResponse(id)
+				require.NotNil(t, response)
+				require.Equal(t, "v1;b=1;s=5;r=942100", openDecision(t, headerValue(t, response.Headers)))
+			} else {
+				host.CallOnResponseHeaders(id, [][2]string{{":status", "200"}}, true)
+				require.Equal(t, "v1;b=0;s=0;r=0", openDecision(t, headerValue(t, host.GetCurrentResponseHeaders(id))))
+			}
+			host.CompleteHttpContext(id)
+		})
+	}
+}
+
 func TestDecisionNonceAndAuthentication(t *testing.T) {
 	t.Setenv("CORAZA_WAF_HEADER_KEY", testDecisionKey)
 	host := decisionHost(t, true, "SecRuleEngine On")

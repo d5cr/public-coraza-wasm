@@ -58,19 +58,25 @@ func (ctx *httpContext) requestDecision() string {
 		if match.Rule().Phase() > 2 || match.Message() == "" {
 			continue
 		}
-		skip := false
+		skip, crs, detection := false, false, false
 		for _, tag := range match.Rule().Tags() {
+			if tag == "OWASP_CRS" {
+				crs = true
+			}
 			if tag == "anomaly-evaluation" || tag == "reporting" {
 				skip = true
 			}
 			if strings.HasPrefix(tag, "paranoia-level/") {
+				detection = true
 				pl, _ := strconv.Atoi(strings.TrimPrefix(tag, "paranoia-level/"))
 				if pl > level {
 					skip = true
 				}
 			}
 		}
-		if !skip {
+		// CRS initialization and exclusion rules can have messages too, but
+		// only detection rules carry a paranoia-level tag.
+		if !skip && (!crs || detection) {
 			ruleID = match.Rule().ID()
 			break
 		}
