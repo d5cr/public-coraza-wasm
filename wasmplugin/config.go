@@ -12,10 +12,11 @@ import (
 
 // pluginConfiguration is a type to represent an example configuration for this wasm plugin.
 type pluginConfiguration struct {
-	directivesMap          DirectivesMap
-	metricLabels           map[string]string
-	defaultDirectives      string
-	perAuthorityDirectives map[string]string
+	encryptedDecisionHeader bool
+	directivesMap           DirectivesMap
+	metricLabels            map[string]string
+	defaultDirectives       string
+	perAuthorityDirectives  map[string]string
 }
 
 type DirectivesMap map[string][]string
@@ -33,6 +34,12 @@ func parsePluginConfiguration(data []byte, infoLogger func(string)) (pluginConfi
 	}
 
 	jsonData := gjson.ParseBytes(data)
+	if header := jsonData.Get("encrypted_decision_header"); header.Exists() {
+		if header.Type != gjson.True && header.Type != gjson.False {
+			return config, fmt.Errorf("encrypted_decision_header must be a boolean")
+		}
+		config.encryptedDecisionHeader = header.Bool()
+	}
 	config.directivesMap = make(DirectivesMap)
 	jsonData.Get("directives_map").ForEach(func(key, value gjson.Result) bool {
 		directiveName := key.String()
