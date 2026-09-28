@@ -1,154 +1,133 @@
-# Coraza Proxy WASM as WasmPlugin for Istio
+# Coraza in Istio
 
-WasmPlugins allow the Istio proxy to be enhanced with WebAssembly filters. 
-The coraza proxy wasm acts as one of these filters, adding WAF features to Istio. 
-The execution order within Envoy's filter chain is set by phase and priority, facilitating 
-intricate interactions between user-provided WasmPlugins and Istio's built-in filters.
+Request-body inspection holds request headers until evaluation finishes. Envoy
+must set `allow_on_headers_stop_iteration: true` for that to work: its default
+Proxy-Wasm header-pause behavior also stops body callbacks. Omitting the setting
+can stall inspected requests. Explicit `SecRequestBodyAccess Off` policies still
+stream and evaluate phase 2 before forwarding headers.
 
-## Istio Setup
+Istio's `WasmPlugin` API does not expose this host option. Use an `EnvoyFilter`
+that adds a complete ECDS extension and references it from the HTTP filter chain.
+An `EXTENSION_CONFIG` MERGE patch cannot modify the generated WasmPlugin resource;
+Istio handles ADD for these extension configurations. Do not install both
+integrations for the same workload.
 
-Given a multitude of possible Istio setups, we will only cover the most common one with the following assumptions:
+## Gateway configuration
 
-- Istio is installed in the `istio-system` namespace
-- The mesh has an entrypoint served by a `istio-ingressgateway` service
-- Services served by Istio have an `istio-proxy` sidecar
-
-## Getting started
-
-The coraza proxy wasm can filter traffic inside the mesh at multiple locations.
-
-### At Ingress gateway for all incoming traffic
-
-The envoy pod of the ingress-gateway can be configured to use the coraza proxy wasm as a filter, thus 
-filtering all incoming traffic.
-
-The following example shows how to configure embedded [Core Rule Set](https://github.com/coreruleset/coreruleset)
-at the ingress gateway and use the coraza proxy wasm as a filter.
-
-It utilizes the 
-[WasmPlugin](https://istio.io/latest/docs/reference/config/proxy_extensions/wasm-plugin/) resource of Istio.
-This way the filter can be configured via the `pluginConfig` field and envoy configuration is abstracted away.
+Replace the namespace, workload selector and release tag below. Pin an immutable
+OCI digest in production. The Istio agent downloads the OCI module and replaces
+the remote source with a local file before Envoy receives the extension.
+`sha256: nil` is Istio's sentinel for an unset module checksum; an OCI digest pin
+still fixes the artifact identity.
 
 ```yaml
-apiVersion: extensions.istio.io/v1alpha1
-kind: WasmPlugin
+apiVersion: networking.istio.io/v1alpha3
+kind: EnvoyFilter
 metadata:
-  name: coraza-ingressgateway
+  name: coraza
   namespace: istio-ingress
 spec:
-  imagePullPolicy: IfNotPresent
-  phase: AUTHN
-  pluginConfig:
-    default_directives: default
-    directives_map:
-      default:
-      - Include @demo-conf
-      - SecDebugLogLevel 9
-      - SecRuleEngine On
-      - Include @crs-setup-conf
-      - Include @owasp_crs/*.conf
-  selector:
-    matchLabels:
-      app: istio-ingressgateway
+  workloadSelector:
+    labels:
       istio: ingressgateway
-  url: oci://ghcr.io/corazawaf/coraza-proxy-wasm
+  configPatches:
+    - applyTo: EXTENSION_CONFIG
+      match:
+        context: GATEWAY
+      patch:
+        operation: ADD
+        value:
+          name: istio-ingress.coraza
+          typed_config:
+            "@type": type.googleapis.com/envoy.extensions.filters.http.wasm.v3.Wasm
+            config:
+              name: coraza
+              allow_on_headers_stop_iteration: true
+              failure_policy: FAIL_CLOSED
+              vm_config:
+                vm_id: coraza
+                runtime: envoy.wasm.runtime.v8
+                code:
+                  remote:
+                    http_uri:
+                      uri: oci://ghcr.io/d5cr/public-coraza-wasm:<release-tag>
+                      cluster: _
+                      timeout: 30s
+                    sha256: nil
+              configuration:
+                "@type": type.googleapis.com/google.protobuf.StringValue
+                value: |
+                  {
+                    "default_directives": "default",
+                    "directives_map": {
+                      "default": [
+                        "Include @recommended-conf",
+                        "SecRuleEngine On",
+                        "SecResponseBodyAccess Off",
+                        "Include @crs-setup-conf",
+                        "Include @owasp_crs/REQUEST-*.conf"
+                      ]
+                    }
+                  }
+    - applyTo: HTTP_FILTER
+      match:
+        context: GATEWAY
+        listener:
+          filterChain:
+            filter:
+              name: envoy.filters.network.http_connection_manager
+      patch:
+        operation: INSERT_FIRST
+        value:
+          name: istio-ingress.coraza
+          config_discovery:
+            config_source:
+              ads: {}
+              initial_fetch_timeout: 0s
+              resource_api_version: V3
+            type_urls:
+              - type.googleapis.com/envoy.extensions.filters.http.wasm.v3.Wasm
 ```
 
-The `selector` needs to match labels attached to the pods of the ingress gateway.
-The `url` points to the OCI image of the coraza proxy wasm, which is provided by the project.
+The extension and HTTP-filter names must match. Check the resulting filter order
+when other EnvoyFilters insert authentication or rate-limit filters. For inbound
+sidecar inspection, use `SIDECAR_INBOUND` for both contexts and select the
+application workloads in their namespace instead.
 
-All traffic entering the mesh via the ingress gateway will now be filtered by the coraza proxy wasm 
-and violations will be logged to the istio-proxy's log and a `403 Forbidden` response will be returned to the client.
+## Verify the integration
 
-### At each namespace individually
+Inspect the proxy's effective configuration, not only the Kubernetes manifest:
 
-Traffic which has successfully passed the ingress gateway can be filtered at each namespace individually using
-a similar approach as above. 
-The following example will show how to load the entire [Core Rule Set](https://github.com/coreruleset/coreruleset).
-
-```yaml
-apiVersion: extensions.istio.io/v1alpha1
-kind: WasmPlugin
-metadata:
-  name: coraza-core-rule-set
-  namespace: my-app
-spec:
-  imagePullPolicy: IfNotPresent
-  phase: AUTHN
-  pluginConfig:
-    default_directives: default
-    directives_map:
-      default:
-      - Include @demo-conf
-      - SecDebugLogLevel 9
-      - SecRuleEngine On
-      - Include @crs-setup-conf
-      - Include @owasp_crs/*.conf
-  selector:
-    matchLabels:
-      app: my-app
-  url: oci://ghcr.io/corazawaf/coraza-proxy-wasm
+```sh
+istioctl proxy-config ecds <gateway-pod> -n istio-ingress -o json
 ```
 
-The `selector` needs to match labels attached to the pods of the namespace where filtering is desired.
-The `namespace` field needs to match the namespace of the pods.
-
-All traffic entering the namespace  will now be filtered by the coraza proxy wasm using the
-entire [Core Rule Set](https://github.com/coreruleset/coreruleset) and 
-violations will be logged to the istio-proxy's log and a `403 Forbidden` response will be returned to the client.
-
-Traffic which has already been filtered by the ingress gateway will not reach the namespace and will only be 
-logged to the istio-proxy's log in the namespace of the ingress-gateway.
-
-## Testing and Logs
-
-The coraza proxy wasm logs violations to the istio-proxy's log.
-
-The following example shows a violation to the rule `REQUEST-941-APPLICATION-ATTACK-XSS` which is included in the
-istio-ingressgateways filter configuration.
-
-```bash
-curl 'https://my-app.my-domain.com/anything?arg=<script>alert(0)</script>' -IL
-HTTP/2 403
-vary: Accept-Encoding
-date: Tue, 10 Oct 2023 13:45:47 GMT
-server: istio-envoy
-```
-
-Depending on your configuration a log in the istio-proxy's log will look like this:
-
-```text
-envoy wasm external/envoy/source/extensions/common/wasm/context.cc:1157	
-wasm log istio-ingress.coraza-ingressgateway: [client "my-client"] 
-Coraza: Warning. Javascript method detected [file "@owasp_crs/REQUEST-941-APPLICATION-ATTACK-XSS.conf"] 
-[line "7982"] [id "941390"] [rev ""] [msg "Javascript method detected"] 
-[data "Matched Data: alert( found within ARGS_GET:arg: <script>alert(0)</script>"] 
-[severity "critical"] [ver "OWASP_CRS/4.0.0-rc1"] [maturity "0"] [accuracy "0"] 
-[tag "application-multi"] [tag "language-multi"] [tag "attack-xss"] [tag "paranoia-level/1"] 
-[tag "OWASP_CRS"] [tag "capec/1000/152/242"] [hostname "my-hostname"] [uri "/anything/?arg=<script>alert(0)</script>"] 
-[unique_id "wTueIQloYpvpWNLzVfy"]	thread=27
-```
+The extension must show `allow_on_headers_stop_iteration: true` and local Wasm
+code supplied by the agent. Send allowed requests and attack-shaped requests to
+a disposable test backend, including a backend that responds before reading the
+request body. A body rejected by phase 2 must not deliver its headers upstream.
+Also verify streaming endpoints that intentionally disable body inspection.
+Rule violations appear in the proxy logs. Host download or startup failures are
+closed by the configured failure policy.
 
 ## Encrypted request decisions
 
 This fork can return an encrypted `X-D5C-WAF` response header. Enable it in the
 plugin configuration and pass `CORAZA_WAF_HEADER_KEY` from the proxy's environment:
 
+Set `encrypted_decision_header` to `true` inside the JSON `configuration.value`
+and add the host environment mapping to the extension's `config`:
+
 ```yaml
-spec:
-  failStrategy: FAIL_CLOSE
-  vmConfig:
-    env:
-      - name: CORAZA_WAF_HEADER_KEY
-        valueFrom: HOST
-  pluginConfig:
-    encrypted_decision_header: true
-    # Keep the existing directives_map and default_directives here.
+vm_config:
+  environment_variables:
+    host_env_keys:
+      - CORAZA_WAF_HEADER_KEY
 ```
 
 Set that environment variable on the gateway container using a Kubernetes
 `secretKeyRef`. Its value must be a base64-encoded, randomly generated 32-byte
-key. Keep the key in your secret manager; do not put it in the WasmPlugin,
+key. Keep the key in your secret manager; do not put it in the EnvoyFilter,
 container image, repository, or browser. When enabled, a missing or malformed
 key prevents plugin startup. Restart the gateway proxies when rotating the key.
 The feature is disabled by default and leaves upstream behavior unchanged.
@@ -194,7 +173,3 @@ cannot replace forbidden response bytes, the plugin traps to stop the stream.
 An authority without a matching or default policy also returns HTTP 500.
 To intentionally allow unmatched authorities without inspection, configure an
 explicit default policy with `SecRuleEngine Off`.
-
-With request-body inspection enabled, the plugin holds request headers until
-inspection completes. Explicit `SecRequestBodyAccess Off` policies still stream
-requests, but evaluate phase 2 before forwarding their headers.
