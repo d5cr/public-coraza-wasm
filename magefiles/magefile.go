@@ -19,11 +19,11 @@ import (
 	"github.com/tetratelabs/wabin/wasm"
 )
 
-var minGoVersion = "1.23"
-var minTinygoVersion = "0.34.0"
-var addLicenseVersion = "04bfe4ee9ca5764577b029acc6a1957fd1997153" // https://github.com/google/addlicense
-var golangCILintVer = "v1.64.8"                                    // https://github.com/golangci/golangci-lint/releases
-var gosImportsVer = "v0.3.8"                                       // https://github.com/rinchsan/gosimports/releases/tag/v0.3.1
+var minGoVersion = "1.26.8"
+var minTinygoVersion = "0.41.0"
+var addLicenseVersion = "v1.2.0" // https://github.com/google/addlicense
+var golangCILintVer = "v2.14.0"  // https://github.com/golangci/golangci-lint/releases
+var gosImportsVer = "v0.3.8"     // https://github.com/rinchsan/gosimports/releases/tag/v0.3.1
 
 var errCommitFormatting = errors.New("files not formatted, please commit formatting changes")
 
@@ -126,7 +126,7 @@ func Format() error {
 
 // Lint verifies code quality.
 func Lint() error {
-	if err := sh.RunV("go", "run", fmt.Sprintf("github.com/golangci/golangci-lint/cmd/golangci-lint@%s", golangCILintVer), "run"); err != nil {
+	if err := sh.RunV("go", "run", fmt.Sprintf("github.com/golangci/golangci-lint/v2/cmd/golangci-lint@%s", golangCILintVer), "run"); err != nil {
 		return err
 	}
 
@@ -191,10 +191,7 @@ func Build() error {
 	}
 
 	buildTags := []string{
-		"custommalloc",     // https://github.com/wasilibs/nottinygc#usage
-		"nottinygc_envoy",  // https://github.com/wasilibs/nottinygc#using-with-envoy
-		"no_fs_access",     // https://github.com/corazawaf/coraza#build-tags
-		"memoize_builders", // https://github.com/corazawaf/coraza#build-tags
+		"no_fs_access", // https://github.com/corazawaf/coraza#build-tags
 	}
 	// By default multiphase evaluation is enabled
 	if os.Getenv("MULTIPHASE_EVAL") != "false" {
@@ -221,11 +218,14 @@ func Build() error {
 
 	buildArgs := []string{
 		"build",
-		"-gc=custom",
+		// Proxy-Wasm keeps calling exports after main returns.
+		"-buildmode=wasi-legacy",
+		"-gc=precise",
 		"-opt=2",
 		"-o", filepath.Join("build", "mainraw.wasm"),
 		"-scheduler=none",
-		"-target=wasip1",
+		// Scheduler-free Wasm uses the linker stack, not the goroutine stack.
+		"-target=" + filepath.Join("magefiles", "wasip1-envoy.json"),
 		buildTagArg,
 	}
 
@@ -291,6 +291,18 @@ func patchWasm(inPath, outPath string, initialPages int) error {
 	}
 
 	mod.MemorySection.Min = uint32(initialPages)
+	// Envoy prefers malloc when it is exported, but does not call free for
+	// these buffers. TinyGo's libc wrapper would retain them indefinitely.
+	// Leave the SDK's GC-managed proxy_on_memory_allocate as the host ABI.
+	exports := mod.ExportSection[:0]
+	for _, export := range mod.ExportSection {
+		switch export.Name {
+		case "malloc", "free", "calloc", "realloc":
+			continue
+		}
+		exports = append(exports, export)
+	}
+	mod.ExportSection = exports
 
 	for _, imp := range mod.ImportSection {
 		switch {

@@ -14,6 +14,7 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -80,10 +81,10 @@ func TestDecisionHeaderEnvoy(t *testing.T) {
 	require.NoError(t, err)
 	_, err = os.Stat(wasm)
 	require.NoError(t, err)
-	config, err := json.Marshal(map[string]interface{}{
+	policies := map[string]interface{}{
 		"encrypted_decision_header": true,
 		"default_directives":        "default",
-		"per_authority_directives":  map[string]string{"phase2.example.com": "bodyless", "response.example.com": "response", "write-error.example.com": "write-error"},
+		"per_authority_directives":  map[string]string{"phase2.example.com": "bodyless", "response.example.com": "response", "write-error.example.com": "write-error", "large-body.example.com": "large-body"},
 		"directives_map": map[string][]string{"default": {
 			"Include @recommended-conf", "SecRuleEngine On", "SecResponseBodyAccess Off", "Include @crs-setup-conf",
 			`SecAction "id:100000,phase:1,pass,nolog,setvar:tx.blocking_paranoia_level=2,setvar:tx.early_blocking=1"`,
@@ -99,8 +100,18 @@ func TestDecisionHeaderEnvoy(t *testing.T) {
 		}, "write-error": {
 			"Include @recommended-conf", "SecRuleEngine On", "SecRequestBodyLimit 1024", "SecRequestBodyInMemoryLimit 2", "SecResponseBodyAccess Off",
 			`SecRule ARGS:q "@contains attack" "id:190103,phase:2,deny,status:403"`,
+		}, "large-body": {
+			"Include @recommended-conf", "SecRuleEngine DetectionOnly", "SecRequestBodyLimit 524288", "SecRequestBodyInMemoryLimit 524288", "SecResponseBodyAccess Off", "Include @crs-setup-conf",
+			`SecAction "id:190104,phase:1,pass,nolog,setvar:tx.blocking_paranoia_level=2,setvar:tx.detection_paranoia_level=2"`,
+			"Include @owasp_crs/REQUEST-*.conf",
 		}},
-	})
+	}
+	for index := range operatorCases {
+		name := fmt.Sprintf("operators-%d", index)
+		policies["per_authority_directives"].(map[string]string)[name+".example.com"] = name
+		policies["directives_map"].(map[string][]string)[name] = operatorDirectives(index)
+	}
+	config, err := json.Marshal(policies)
 	require.NoError(t, err)
 	bootstrap := fmt.Sprintf(`static_resources:
   listeners:
@@ -238,6 +249,38 @@ func TestDecisionHeaderEnvoy(t *testing.T) {
 					require.NoError(t, err)
 					require.Equal(t, "data: first\n", line)
 				}
+			}
+		})
+	}
+	// Operator changes must not make an ordinary inspected body exceed the
+	// client's five-second timeout. Uninspected uploads cannot catch this.
+	t.Run("large inspected body", func(t *testing.T) {
+		request, err := http.NewRequest(http.MethodPost, base+"/large-body", strings.NewReader(strings.Repeat("a", 524288)))
+		require.NoError(t, err)
+		request.Host = "large-body.example.com"
+		request.Header.Set("Content-Type", "text/plain")
+		response, err := client.Do(request)
+		require.NoError(t, err)
+		defer response.Body.Close()
+		require.Equal(t, http.StatusOK, response.StatusCode)
+		require.Contains(t, openDecision(t, response.Header.Get(decisionHeader)), "v1;b=0;")
+	})
+	for index, tc := range operatorCases {
+		t.Run("operator "+tc.name, func(t *testing.T) {
+			before := calls.Load()
+			request, err := http.NewRequest(http.MethodGet, base+"/?value="+url.QueryEscape(tc.value), nil)
+			require.NoError(t, err)
+			request.Host = fmt.Sprintf("operators-%d.example.com", index)
+			response, err := client.Do(request)
+			require.NoError(t, err)
+			defer response.Body.Close()
+			if tc.match {
+				require.Equal(t, http.StatusForbidden, response.StatusCode)
+				require.Equal(t, "v1;b=1;s=5;r=190200", openDecision(t, response.Header.Get(decisionHeader)))
+				require.Equal(t, before, calls.Load())
+			} else {
+				require.Equal(t, http.StatusOK, response.StatusCode)
+				require.Equal(t, "v1;b=0;s=0;r=0", openDecision(t, response.Header.Get(decisionHeader)))
 			}
 		})
 	}

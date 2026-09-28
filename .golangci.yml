@@ -1,25 +1,31 @@
-run:
-  deadline: 5m
-
+version: "2"
 linters:
-  disable-all: true
+  default: none
   enable:
-    # Enabled by default, see https://golangci-lint.run/usage/linters#enabled-by-default
-    # - deadcode  # deprecated (since v1.49.0) due to: The owner seems to have abandoned the linter.
     - errcheck
-    - gosimple
+    - gocritic
     - govet
     - ineffassign
     - staticcheck
-    # - structcheck # deprecated (since v1.49.0) due to: The owner seems to have abandoned the linter.
-    - typecheck
     - unused
-    # - varcheck # deprecated (since v1.49.0) due to: The owner seems to have abandoned the linter.
-    - goimports
+  exclusions:
+    generated: lax
+    presets:
+      - comments
+      - common-false-positives
+      - legacy
+      - std-error-handling
+    paths:
+      - third_party$
+      - builtin$
+      - examples$
+formatters:
+  enable:
     - gofmt
-    - gocritic
-# issues:
-#   exclude-rules:
-#     - path: magefile\.go
-#       linters:
-#         - deadcode
+    - goimports
+  exclusions:
+    generated: lax
+    paths:
+      - third_party$
+      - builtin$
+      - examples$

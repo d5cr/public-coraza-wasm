@@ -1,0 +1,27 @@
+{
+  "inherits": [
+    "wasip1"
+  ],
+  "cflags": [
+    "-D_GNU_SOURCE",
+    "-I{root}/lib/wasi-libc/libc-top-half/musl/src/include",
+    "-I{root}/lib/wasi-libc/libc-top-half/musl/src/internal"
+  ],
+  "extra-files": [
+    "lib/musl/src/ctype/toupper.c",
+    "lib/musl/src/ctype/tolower.c",
+    "lib/musl/src/ctype/isdigit.c",
+    "lib/musl/src/ctype/isxdigit.c",
+    "lib/musl/src/ctype/islower.c",
+    "lib/musl/src/ctype/isupper.c",
+    "lib/musl/src/ctype/iswlower.c",
+    "lib/musl/src/ctype/iswupper.c",
+    "lib/musl/src/ctype/towctrans.c",
+    "lib/musl/src/ctype/isalpha.c",
+    "lib/musl/src/ctype/__ctype_get_mb_cur_max.c"
+  ],
+  "ldflags": [
+    "-z",
+    "stack-size=1048576"
+  ]
+}

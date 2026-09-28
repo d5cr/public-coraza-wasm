@@ -41,10 +41,10 @@ func (m *wafMetrics) CountTXInterruption(phase string, ruleID int, metricLabelsK
 	// The extraction rule is defined in envoy.yaml as a bootstrap configuration.
 	// See https://www.envoyproxy.io/docs/envoy/latest/api-v3/config/metrics/v3/stats.proto#config-metrics-v3-statsconfig.
 	var sb strings.Builder
-	sb.WriteString(fmt.Sprintf("waf_filter.tx.interruptions_ruleid=%d_phase=%s", ruleID, phase))
+	_, _ = fmt.Fprintf(&sb, "waf_filter.tx.interruptions_ruleid=%d_phase=%s", ruleID, phase)
 
 	for i := 0; i < len(metricLabelsKV); i += 2 {
-		sb.WriteString(fmt.Sprintf("_%s=%s", metricLabelsKV[i], metricLabelsKV[i+1]))
+		_, _ = fmt.Fprintf(&sb, "_%s=%s", metricLabelsKV[i], metricLabelsKV[i+1])
 	}
 
 	fqn := sb.String()
