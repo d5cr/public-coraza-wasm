@@ -107,7 +107,8 @@ jobs:
             go test -tags=llvm19 ./transform -run TestMakeGCStackSlots -count=1
             tinygo build -target=wasi -scheduler=none -gc=precise -opt=z -o /compiler/gc-liveness.wasm testdata/gc-liveness-repro.go
             cd /src
-            go run github.com/tetratelabs/wazero/cmd/wazero@v1.12.0 run /compiler/gc-liveness.wasm > /compiler/gc-liveness.txt 2>&1
+            GOBIN=/compiler/tinygo/bin go install github.com/tetratelabs/wazero/cmd/wazero@v1.12.0
+            /compiler/tinygo/bin/wazero run /compiler/gc-liveness.wasm > /compiler/gc-liveness.txt 2>&1
             diff -u /compiler/tinygo/testdata/gc-liveness-repro.txt /compiler/gc-liveness.txt
           '
           docker exec --env MULTIPHASE_EVAL="$MULTIPHASE_EVAL" coraza-build sh -ec '
