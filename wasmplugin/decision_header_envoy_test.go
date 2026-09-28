@@ -34,12 +34,19 @@ func TestDecisionHeaderEnvoy(t *testing.T) {
 	var calls atomic.Int32
 	streamDone := make(chan struct{})
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		// Envoy can forward headers before the WAF finishes inspecting a body.
-		// Count only complete requests, as an application consuming the body does.
+		calls.Add(1)
+		if r.URL.Path == "/early-response" {
+			if err := http.NewResponseController(w).EnableFullDuplex(); err != nil {
+				t.Error(err)
+				return
+			}
+			w.WriteHeader(http.StatusOK)
+			w.(http.Flusher).Flush()
+			return
+		}
 		if _, err := io.Copy(io.Discard, r.Body); err != nil {
 			return
 		}
-		calls.Add(1)
 		if r.Header.Get(decisionHeader) != "" {
 			t.Error("client WAF header reached upstream")
 		}
@@ -61,6 +68,7 @@ func TestDecisionHeaderEnvoy(t *testing.T) {
 		_, _ = io.WriteString(w, "upstream")
 	}))
 	defer upstream.Close()
+	defer upstream.CloseClientConnections()
 	defer close(streamDone)
 	_, upstreamPortText, err := net.SplitHostPort(strings.TrimPrefix(upstream.URL, "http://"))
 	require.NoError(t, err)
@@ -117,6 +125,7 @@ func TestDecisionHeaderEnvoy(t *testing.T) {
               "@type": type.googleapis.com/envoy.extensions.filters.http.wasm.v3.Wasm
               config:
                 name: coraza
+                allow_on_headers_stop_iteration: true
                 configuration:
                   "@type": type.googleapis.com/google.protobuf.StringValue
                   value: %s
@@ -264,6 +273,35 @@ func TestDecisionHeaderEnvoy(t *testing.T) {
 		require.Equal(t, http.StatusInternalServerError, response.StatusCode)
 		require.Equal(t, "v1;b=1;s=0;r=0", openDecision(t, response.Header.Get(decisionHeader)))
 		require.Equal(t, before, calls.Load(), "uninspected request completed upstream")
+	})
+
+	t.Run("upstream cannot respond before body inspection", func(t *testing.T) {
+		for _, body := range []string{`{"q":"<script>alert(1)</script>"}`, `{"q":"hello"}`} {
+			before := calls.Load()
+			conn, err := net.DialTimeout("tcp", fmt.Sprintf("127.0.0.1:%d", port), 5*time.Second)
+			require.NoError(t, err)
+			defer conn.Close()
+			require.NoError(t, conn.SetDeadline(time.Now().Add(5*time.Second)))
+			_, err = fmt.Fprintf(conn, "POST /early-response HTTP/1.1\r\nHost: example.com\r\nContent-Type: application/json\r\nContent-Length: %d\r\nConnection: close\r\n\r\n", len(body))
+			require.NoError(t, err)
+			time.Sleep(100 * time.Millisecond)
+			require.Equal(t, before, calls.Load(), "uninspected headers reached upstream")
+			_, err = io.WriteString(conn, body)
+			require.NoError(t, err)
+			response, err := http.ReadResponse(bufio.NewReader(conn), &http.Request{Method: http.MethodPost})
+			require.NoError(t, err)
+			_, err = io.Copy(io.Discard, response.Body)
+			require.NoError(t, err)
+			require.NoError(t, response.Body.Close())
+			require.NoError(t, conn.Close())
+			if strings.Contains(body, "script") {
+				require.Equal(t, http.StatusForbidden, response.StatusCode)
+				require.Equal(t, before, calls.Load())
+			} else {
+				require.Equal(t, http.StatusOK, response.StatusCode)
+				require.Equal(t, before+1, calls.Load())
+			}
+		}
 	})
 
 }

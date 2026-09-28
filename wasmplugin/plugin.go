@@ -366,12 +366,13 @@ func (ctx *httpContext) OnHttpRequestHeaders(numHeaders int, endOfStream bool) t
 		return ctx.handleInterruption(interruptionPhaseHttpRequestHeaders, interruption)
 	}
 
-	if endOfStream {
-		// No body callback will follow. Finish phase 2 before any upstream
-		// application can act on a request that should have been denied.
+	if endOfStream || !tx.IsRequestBodyAccessible() {
+		// Finish phase 2 before forwarding when no body inspection is needed.
 		return ctx.OnHttpRequestBody(0, true)
 	}
-	return types.ActionContinue
+	// Keep headers upstream of the router until body inspection finishes. An
+	// application may act on headers or respond without reading the body.
+	return types.ActionPause
 }
 
 func (ctx *httpContext) OnHttpRequestBody(bodySize int, endOfStream bool) types.Action {

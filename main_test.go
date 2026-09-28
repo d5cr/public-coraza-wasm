@@ -201,7 +201,7 @@ func TestLifecycle(t *testing.T) {
 			inlineRules: `
 			SecRuleEngine On\nSecRequestBodyAccess On\nSecRule REQUEST_BODY \"name=yogi\" \"id:101,phase:2,t:lowercase,deny\"
 			`,
-			requestHdrsAction:  types.ActionContinue,
+			requestHdrsAction:  types.ActionPause,
 			requestBodyAction:  types.ActionContinue,
 			responseHdrsAction: types.ActionContinue,
 			responded403:       false,
@@ -212,7 +212,7 @@ func TestLifecycle(t *testing.T) {
 			inlineRules: `
 			SecRuleEngine On\nSecRequestBodyAccess On\nSecRule REQUEST_BODY \"name=pooh\" \"id:101,phase:2,t:lowercase,deny\"
 			`,
-			requestHdrsAction:  types.ActionContinue,
+			requestHdrsAction:  types.ActionPause,
 			requestBodyAction:  types.ActionPause,
 			responseHdrsAction: types.ActionContinue,
 			responded403:       true,
@@ -223,7 +223,7 @@ func TestLifecycle(t *testing.T) {
 			inlineRules: `
 			SecRuleEngine On\nSecRequestBodyAccess On\nSecRule REQUEST_BODY \"animal=bear\" \"id:101,phase:2,t:lowercase,deny\"
 			`,
-			requestHdrsAction:  types.ActionContinue,
+			requestHdrsAction:  types.ActionPause,
 			requestBodyAction:  types.ActionPause,
 			responseHdrsAction: types.ActionContinue,
 			responded403:       true,
@@ -245,7 +245,7 @@ func TestLifecycle(t *testing.T) {
 			inlineRules: `
 			SecRuleEngine On\nSecRequestBodyAccess On\nSecRequestBodyLimit 2\nSecRequestBodyLimitAction ProcessPartial\nSecRule REQUEST_BODY \"animal=bear\" \"id:101,phase:2,t:lowercase,deny\"
 			`,
-			requestHdrsAction:  types.ActionContinue,
+			requestHdrsAction:  types.ActionPause,
 			requestBodyAction:  types.ActionContinue,
 			responseHdrsAction: types.ActionContinue,
 			responded403:       false,
@@ -256,7 +256,7 @@ func TestLifecycle(t *testing.T) {
 			inlineRules: `
 			SecRuleEngine On\nSecRequestBodyAccess On\nSecRequestBodyLimit 2\nSecRequestBodyLimitAction Reject\nSecRule REQUEST_BODY \"name=yogi\" \"id:101,phase:2,t:lowercase,deny\"
 			`,
-			requestHdrsAction:  types.ActionContinue,
+			requestHdrsAction:  types.ActionPause,
 			requestBodyAction:  types.ActionPause,
 			responseHdrsAction: types.ActionContinue,
 			responded413:       true,
@@ -452,7 +452,7 @@ func TestLifecycle(t *testing.T) {
 
 				// Stream bodies in chunks of 5
 
-				if requestHdrsAction == types.ActionContinue {
+				if host.GetSentLocalResponse(id) == nil {
 					totalBodysent := 0
 					requestBodyAccess := strings.Contains(tt.inlineRules, "SecRequestBodyAccess On")
 					requestBodyProcessPartial := strings.Contains(tt.inlineRules, "SecRequestBodyLimitAction ProcessPartial")
@@ -981,7 +981,7 @@ func TestBodyRulesWithoutBody(t *testing.T) {
 	tests := []struct {
 		name                  string
 		rules                 string
-		responseHdrsAction    types.Action
+		requestHdrsAction     types.Action
 		responded403          bool
 		disableWithMultiphase bool
 	}{
@@ -990,15 +990,15 @@ func TestBodyRulesWithoutBody(t *testing.T) {
 			rules: `
 		SecRuleEngine On\nSecRule REQUEST_URI \"@streq /admin\" \"id:101,phase:2,t:lowercase,deny\"
 		`,
-			responseHdrsAction: types.ActionContinue,
-			responded403:       false,
+			requestHdrsAction: types.ActionContinue,
+			responded403:      false,
 		},
 		{
 			name: "url denied in request body phase",
 			rules: `
 SecRuleEngine On\nSecRule REQUEST_URI \"@streq /hello\" \"id:101,phase:2,t:lowercase,deny\"
 `,
-			responseHdrsAction:    types.ActionPause,
+			requestHdrsAction:     types.ActionPause,
 			responded403:          true,
 			disableWithMultiphase: true,
 		},
@@ -1007,15 +1007,15 @@ SecRuleEngine On\nSecRule REQUEST_URI \"@streq /hello\" \"id:101,phase:2,t:lower
 			rules: `
 		SecRuleEngine On\nSecRule REQUEST_URI \"@streq /admin\" \"id:101,phase:4,t:lowercase,deny\"
 		`,
-			responseHdrsAction: types.ActionContinue,
-			responded403:       false,
+			requestHdrsAction: types.ActionContinue,
+			responded403:      false,
 		},
 		{
 			name: "url denied in response body phase",
 			rules: `
 		SecRuleEngine On\nSecRule REQUEST_URI \"@streq /hello\" \"id:101,phase:4,t:lowercase,deny\"
 		`,
-			responseHdrsAction:    types.ActionContinue,
+			requestHdrsAction:     types.ActionContinue,
 			responded403:          false,
 			disableWithMultiphase: true,
 		},
@@ -1047,10 +1047,10 @@ SecRuleEngine On\nSecRule REQUEST_URI \"@streq /hello\" \"id:101,phase:2,t:lower
 				id := host.InitializeHttpContext()
 
 				requestHdrsAction := host.CallOnRequestHeaders(id, reqHdrs, false)
-				require.Equal(t, types.ActionContinue, requestHdrsAction)
+				require.Equal(t, tt.requestHdrsAction, requestHdrsAction)
 
 				responseHdrsAction := host.CallOnResponseHeaders(id, respHdrs, false)
-				require.Equal(t, tt.responseHdrsAction, responseHdrsAction)
+				require.Equal(t, types.ActionContinue, responseHdrsAction)
 
 				// Call OnHttpStreamDone.
 				host.CompleteHttpContext(id)
@@ -1067,11 +1067,9 @@ SecRuleEngine On\nSecRule REQUEST_URI \"@streq /hello\" \"id:101,phase:2,t:lower
 	})
 }
 
-// GET requests without a body never call OnHttpRequestBody, so phase-2 rules are deferred and
-// run in OnHttpResponseHeaders instead. The interruption must still be reported as the request
-// body phase, not as the Envoy callback (response headers) it happened to run in. SecAction (not
-// REQUEST_URI) is used so multiphase evaluation does not deny the request earlier, at request headers.
-func TestDeferredPhase2GETWithoutBodyLogsRequestBodyPhase(t *testing.T) {
+// Phase 2 without body inspection runs before forwarding request headers.
+// Its diagnostic phase must remain the request body phase.
+func TestPhase2WithoutBodyAccessLogsRequestBodyPhase(t *testing.T) {
 	reqHdrs := [][2]string{
 		{":path", "/hello"},
 		{":method", "GET"},
@@ -1097,10 +1095,10 @@ func TestDeferredPhase2GETWithoutBodyLogsRequestBodyPhase(t *testing.T) {
 		id := host.InitializeHttpContext()
 
 		requestHdrsAction := host.CallOnRequestHeaders(id, reqHdrs, false)
-		require.Equal(t, types.ActionContinue, requestHdrsAction)
+		require.Equal(t, types.ActionPause, requestHdrsAction)
 
 		responseHdrsAction := host.CallOnResponseHeaders(id, respHdrs, false)
-		require.Equal(t, types.ActionPause, responseHdrsAction)
+		require.Equal(t, types.ActionContinue, responseHdrsAction)
 
 		pluginResp := host.GetSentLocalResponse(id)
 		require.NotNil(t, pluginResp)
