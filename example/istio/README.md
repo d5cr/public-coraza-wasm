@@ -163,7 +163,7 @@ The token is diagnostic data, not an authorization credential or replay proof.
 `b` records a request-phase WAF interruption, not an application's HTTP status.
 `s` sums the inbound CRS anomaly counters through the blocking paranoia level,
 including scores accrued before early blocking. `r` is the first matching
-request rule with a message, excluding CRS score gates, reporting rules, and
+request rule with a message, excluding CRS initialization, score gates, reporting rules, and
 rules above the blocking paranoia level. It falls back to the interrupting rule
 ID; zero means no such rule is available. Engine limits can block without a rule
 or anomaly score. The header is a request-inspection snapshot; response rules
@@ -173,3 +173,13 @@ The filter removes client-supplied copies and replaces all upstream copies of
 this header. Both allowed and locally blocked requests receive a token. The
 feature adds no response-body buffering. Configure `SecResponseBodyAccess Off`
 when only incoming traffic should be inspected and responses must stream.
+
+With this feature enabled, WAF-generated 403 responses use
+`Content-Type: text/plain; charset=utf-8` and `Cache-Control: no-store`:
+
+```text
+403 FIREWALL <encrypted token> IF UNEXPECTED FORWARD TO security@d-roy.ca
+```
+
+The body and `X-D5C-WAF` carry the same token. Application-generated 403 bodies
+and other WAF status codes keep their existing behavior.

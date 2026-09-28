@@ -85,6 +85,9 @@ func (ctx *httpContext) requestDecision() string {
 }
 
 func (ctx *httpContext) encryptedDecision() string {
+	if ctx.decisionToken != "" {
+		return ctx.decisionToken
+	}
 	// Padding hides differences in the lengths of scores and rule IDs.
 	plain := make([]byte, 64)
 	decision := ctx.requestDecision()
@@ -97,7 +100,8 @@ func (ctx *httpContext) encryptedDecision() string {
 		panic("WAF decision nonce generation failed")
 	}
 	token := ctx.decisionAEAD.Seal(nonce, nonce, plain, []byte(decisionAAD))
-	return "v1." + base64.RawURLEncoding.EncodeToString(token)
+	ctx.decisionToken = "v1." + base64.RawURLEncoding.EncodeToString(token)
+	return ctx.decisionToken
 }
 
 func (ctx *httpContext) writeDecisionHeader() {

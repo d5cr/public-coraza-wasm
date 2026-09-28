@@ -189,6 +189,11 @@ func TestDecisionHeaderEnvoy(t *testing.T) {
 			plain := openDecision(t, token)
 			if tc.blocked {
 				require.Equal(t, 403, response.StatusCode)
+				require.Equal(t, "text/plain; charset=utf-8", response.Header.Get("Content-Type"))
+				require.Equal(t, "no-store", response.Header.Get("Cache-Control"))
+				body, err := io.ReadAll(response.Body)
+				require.NoError(t, err)
+				require.Equal(t, "403 FIREWALL "+token+" IF UNEXPECTED FORWARD TO security@d-roy.ca\n", string(body))
 				require.Contains(t, plain, "v1;b=1;")
 				require.NotContains(t, plain, ";s=0;")
 				require.NotContains(t, plain, ";r=949")
@@ -200,6 +205,9 @@ func TestDecisionHeaderEnvoy(t *testing.T) {
 				require.Equal(t, "v1;b=0;s=0;r=0", plain)
 				if tc.path == "/application-denied" {
 					require.Equal(t, 403, response.StatusCode)
+					body, err := io.ReadAll(response.Body)
+					require.NoError(t, err)
+					require.Equal(t, "upstream", string(body))
 				} else {
 					require.Equal(t, 200, response.StatusCode)
 				}
