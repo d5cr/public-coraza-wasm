@@ -94,6 +94,9 @@ func checkVersion(lang string, minVersion string) error {
 		if baseN > compareN {
 			return fmt.Errorf("unexpected %s version, minimum want %q, have %q", lang, minVersion, strings.Join(compare, "."))
 		}
+		if compareN > baseN {
+			return nil
+		}
 	}
 	return nil
 }
