@@ -365,6 +365,11 @@ func (ctx *httpContext) OnHttpRequestHeaders(numHeaders int, endOfStream bool) t
 		return ctx.handleInterruption(interruptionPhaseHttpRequestHeaders, interruption)
 	}
 
+	if endOfStream {
+		// No body callback will follow. Finish phase 2 before any upstream
+		// application can act on a request that should have been denied.
+		return ctx.OnHttpRequestBody(0, true)
+	}
 	return types.ActionContinue
 }
 

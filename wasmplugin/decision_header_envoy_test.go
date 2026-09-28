@@ -74,11 +74,15 @@ func TestDecisionHeaderEnvoy(t *testing.T) {
 	config, err := json.Marshal(map[string]interface{}{
 		"encrypted_decision_header": true,
 		"default_directives":        "default",
+		"per_authority_directives":  map[string]string{"phase2.example.com": "bodyless"},
 		"directives_map": map[string][]string{"default": {
 			"Include @recommended-conf", "SecRuleEngine On", "SecResponseBodyAccess Off", "Include @crs-setup-conf",
 			`SecAction "id:100000,phase:1,pass,nolog,setvar:tx.blocking_paranoia_level=2,setvar:tx.early_blocking=1"`,
 			"Include @owasp_crs/REQUEST-*.conf",
 			`SecRule REQUEST_URI "@streq /blocked" "id:190001,phase:1,deny,status:403,msg:'header block',setvar:tx.inbound_anomaly_score_pl1=+5"`,
+		}, "bodyless": {
+			"SecRuleEngine On",
+			`SecAction "id:190002,phase:2,deny,status:403,msg:'bodyless request denied',setvar:tx.inbound_anomaly_score_pl1=+5"`,
 		}},
 	})
 	require.NoError(t, err)
@@ -159,7 +163,7 @@ func TestDecisionHeaderEnvoy(t *testing.T) {
 		path, body string
 		blocked    bool
 	}{
-		{"/", "", false}, {"/application-denied", "", false}, {"/blocked", "", true},
+		{"/", "", false}, {"/application-denied", "", false}, {"/blocked", "", true}, {"/bodyless-blocked", "", true},
 		{"/?q=%3Cscript%3Ealert(1)%3C/script%3E", "", true},
 		{"/api", `{"q":"<script>alert(1)</script>"}`, true},
 		{"/stream", "", false},
@@ -173,6 +177,9 @@ func TestDecisionHeaderEnvoy(t *testing.T) {
 			request, err := http.NewRequest(method, base+tc.path, strings.NewReader(tc.body))
 			require.NoError(t, err)
 			request.Host = "example.com"
+			if tc.path == "/bodyless-blocked" {
+				request.Host = "phase2.example.com"
+			}
 			if tc.body != "" {
 				request.Header.Set("Content-Type", "application/json")
 			}
@@ -198,9 +205,7 @@ func TestDecisionHeaderEnvoy(t *testing.T) {
 				require.NotContains(t, plain, ";s=0;")
 				require.NotContains(t, plain, ";r=949")
 				require.NotContains(t, plain, ";r=901")
-				if tc.body != "" || tc.path == "/blocked" {
-					require.Equal(t, before, calls.Load(), "blocked request completed upstream")
-				}
+				require.Equal(t, before, calls.Load(), "blocked request completed upstream")
 			} else {
 				require.Equal(t, "v1;b=0;s=0;r=0", plain)
 				if tc.path == "/application-denied" {
