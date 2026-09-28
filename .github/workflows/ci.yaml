@@ -55,7 +55,7 @@ jobs:
               --env GOPATH=/go --env GOCACHE=/go-build \
               --env XDG_CACHE_HOME=/tinygo-cache --env MAGEFILE_CACHE=/go-build/mage \
               --volume "$PWD:/src" --workdir /src \
-              --volume "$(go env GOPATH)/pkg/mod:/go/pkg/mod" \
+              --volume "$(go env GOPATH)/pkg:/go/pkg" \
               --volume "$(go env GOCACHE):/go-build" \
               --volume "$HOME/.cache/tinygo:/tinygo-cache/tinygo" \
               "$TINYGO_IMAGE" go run mage.go build
