@@ -123,6 +123,8 @@ jobs:
               cp build/main.wasm build/mainraw.wasm "$cached/"
             fi
           '
+          docker exec coraza-build chown -R "$(id -u):$(id -g)" \
+            /compiler/tinygo /tinygo-cache/tinygo /go/pkg /go-build /src/build
           sha256sum build/main.wasm
           tags=()
           if [[ "$MULTIPHASE_EVAL" == true ]]; then tags=(-tags=coraza.rule.multiphase_evaluation); fi
