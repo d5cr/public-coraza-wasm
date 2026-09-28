@@ -4,6 +4,7 @@
 package wasmplugin
 
 import (
+	"bytes"
 	"testing"
 
 	"github.com/corazawaf/coraza/v3/debuglog"
@@ -84,6 +85,34 @@ func TestBodylessRequestPhase2BeforeForwarding(t *testing.T) {
 			response := host.GetSentLocalResponse(id)
 			require.NotNil(t, response, "deny must precede any upstream response")
 			require.Equal(t, uint32(403), response.StatusCode)
+			host.CompleteHttpContext(id)
+		})
+	}
+}
+
+func TestResponseBodyAfterPartialRequest(t *testing.T) {
+	for _, tc := range []struct {
+		name, lastChunk, response string
+		blocked                   bool
+	}{
+		{"partial request, denied response", "bbbb", "LEAKxx", true},
+		{"complete request, denied response", "b", "LEAKxx", true},
+		{"partial request, allowed response", "bbbb", "safe", false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			host := decisionHost(t, false, "SecRuleEngine On", "SecRequestBodyAccess On", "SecRequestBodyLimit 6", "SecRequestBodyLimitAction ProcessPartial", "SecResponseBodyAccess On", "SecResponseBodyMimeType text/plain", `SecRule RESPONSE_BODY "@beginsWith LEAK" "id:190100,phase:4,deny,status:403"`)
+			id := host.InitializeHttpContext()
+			require.NoError(t, host.SetProperty([]string{"request", "protocol"}, []byte("HTTP/2.0")))
+			host.CallOnRequestHeaders(id, [][2]string{{":authority", "example.com"}, {":method", "POST"}, {":path", "/"}, {"content-type", "text/plain"}}, false)
+			require.Equal(t, types.ActionPause, host.CallOnRequestBody(id, []byte("aaaa"), false))
+			require.Equal(t, types.ActionContinue, host.CallOnRequestBody(id, []byte(tc.lastChunk), true))
+			host.CallOnResponseHeaders(id, [][2]string{{":status", "200"}, {"content-type", "text/plain"}}, false)
+			host.CallOnResponseBody(id, []byte(tc.response), true)
+			expected := []byte(tc.response)
+			if tc.blocked {
+				expected = bytes.Repeat([]byte{0}, len(tc.response))
+			}
+			require.Equal(t, expected, host.GetCurrentResponseBody(id))
 			host.CompleteHttpContext(id)
 		})
 	}

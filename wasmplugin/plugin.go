@@ -524,6 +524,10 @@ func (ctx *httpContext) OnHttpResponseHeaders(numHeaders int, endOfStream bool) 
 		}
 	}
 
+	// Request and response bodies are separate host buffers. ProcessPartial
+	// can finish request inspection without consuming its final chunk.
+	ctx.bodyReadIndex = 0
+
 	status, err := proxywasm.GetHttpResponseHeader(":status")
 	if err != nil {
 		ctx.logger.Error().
