@@ -1,8 +1,8 @@
 services:
   albedo:
-    image: ghcr.io/coreruleset/albedo:0.2.0
+    image: ghcr.io/coreruleset/albedo:0.3.0
   chown:
-    image: alpine:3.16
+    image: alpine:3.24.2
     command:
       - /bin/sh
       - -c
@@ -14,7 +14,7 @@ services:
     depends_on:
       - chown
       - albedo
-    image: ${ENVOY_IMAGE:-envoyproxy/envoy:v1.31-latest}
+    image: ${ENVOY_IMAGE:-envoyproxy/envoy:v1.39.1}
     command:
       - -c
       - ${ENVOY_CONFIG:-/conf/envoy-config.yaml}
@@ -34,7 +34,7 @@ services:
   wasm-logs:
     depends_on:
       - envoy
-    image: debian:11-slim
+    image: debian:13.7-slim
     entrypoint: bash
     command:
       - -c
@@ -44,7 +44,7 @@ services:
   envoy-logs:
     depends_on:
       - envoy
-    image: debian:11-slim
+    image: debian:13.7-slim
     entrypoint: bash
     command:
       - -c
@@ -66,7 +66,7 @@ services:
   ftw-memstats:
     depends_on:
       - ftw
-    image: debian:11-slim
+    image: debian:13.7-slim
     entrypoint: bash
     command:
       - -c

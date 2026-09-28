@@ -31,10 +31,22 @@ Targets:
 
 Building the filter requires:
 
-- [Go](https://go.dev/doc/install)
-- [TinyGo](https://tinygo.org/getting-started/install/) `0.34.0`. Note: higher versions are currently not supported.
+- [Go](https://go.dev/doc/install) `1.26.8`
+- [TinyGo](https://tinygo.org/getting-started/install/) `0.41.0`
 
-Up to date required versions can be found looking at [`minGoVersion` and `tinygoMinorVersion` variables](./magefiles/magefile.go).
+Required versions and build flags are defined in [magefiles/magefile.go](./magefiles/magefile.go).
+The module retains the optimized Wasm operators and uses TinyGo's precise GC.
+The compiler pair and `go-re2` 1.7.0 are pinned for Envoy compatibility. Newer
+`go-re2` releases omit the TinyGo static libraries or require a separate large
+linear-memory allocation. The target in
+[magefiles/wasip1-envoy.json](./magefiles/wasip1-envoy.json) reserves a 1 MiB
+linker stack because dependency initializers exceed the default 64 KiB stack.
+It also compiles the C character functions required by the static libraries
+from TinyGo's bundled musl sources, using its WASI headers.
+The `wasi-legacy` build mode keeps exports callable after `main` returns, as
+required by the Proxy-Wasm host.
+The published module exposes the SDK's garbage-collected allocation callback
+instead of libc allocation exports, whose buffers Envoy does not free.
 
 ### Building the filter
 
