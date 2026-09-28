@@ -1,4 +1,4 @@
-name: Verify Wasm
+name: Verify and publish Wasm
 
 on:
   push:
@@ -6,13 +6,15 @@ on:
   pull_request:
     branches: [main]
   workflow_dispatch:
+  release:
+    types: [published]
 
 permissions:
   contents: read
 
 concurrency:
   group: verify-${{ github.ref }}
-  cancel-in-progress: true
+  cancel-in-progress: ${{ github.event_name != 'release' }}
 
 env:
   ENVOY_IMAGES: >-
@@ -67,3 +69,56 @@ jobs:
               ENVOY_IMAGE="$image" go test -tags=envoy ./wasmplugin -run TestDecisionHeaderEnvoy -count=1
             done
           done
+      - name: Retain the verified release module
+        if: github.event_name == 'release'
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: release-wasm
+          path: build/main.wasm
+          if-no-files-found: error
+          retention-days: 1
+
+  publish:
+    needs: verify
+    if: github.event_name == 'release' && github.repository == 'd5cr/public-coraza-wasm' && !github.event.repository.private
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: release-wasm
+          path: build
+      - name: Publish the verified release to GHCR
+        env:
+          GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GHCR_USER: ${{ github.actor }}
+          RELEASE_TAG: ${{ github.event.release.tag_name }}
+          IMAGE: ghcr.io/d5cr/public-coraza-wasm
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ ! "$RELEASE_TAG" =~ ^[A-Za-z0-9_][A-Za-z0-9_.-]{0,127}$ ]]; then
+            echo "Release tag must be a valid container tag." >&2
+            exit 1
+          fi
+          printf '%s' "$GHCR_TOKEN" | docker login ghcr.io --username "$GHCR_USER" --password-stdin
+          revision="$(git rev-parse HEAD)"
+          if docker pull "$IMAGE:$RELEASE_TAG"; then
+            existing="$(docker image inspect "$IMAGE:$RELEASE_TAG" --format '{{ index .Config.Labels "org.opencontainers.image.revision" }}')"
+            if [[ "$existing" == "$revision" ]]; then
+              echo "This release commit is already published."
+              exit 0
+            fi
+            echo "Refusing to overwrite a release tag from another commit." >&2
+            exit 1
+          fi
+          docker build --tag "$IMAGE:$RELEASE_TAG" \
+            --label org.opencontainers.image.source=https://github.com/d5cr/public-coraza-wasm \
+            --label org.opencontainers.image.revision="$revision" \
+            --label org.opencontainers.image.version="$RELEASE_TAG" .
+          docker push "$IMAGE:$RELEASE_TAG"
+          docker image inspect "$IMAGE:$RELEASE_TAG" --format '{{json .RepoDigests}}' >> "$GITHUB_STEP_SUMMARY"
