@@ -274,12 +274,16 @@ func TestWAFMap(t *testing.T) {
 }
 
 func TestRecommendedArgumentLimit(t *testing.T) {
-	for _, mode := range []string{"On", "DetectionOnly"} {
+	for _, policy := range []struct{ mode, include string }{
+		{"On", "@recommended-conf"}, {"DetectionOnly", "@recommended-conf"},
+		{"On", "@demo-conf"}, {"DetectionOnly", "@demo-conf"},
+	} {
+		mode := policy.mode
 		for _, source := range []string{"query", "form"} {
 			for _, count := range []int{2, 3} {
-				t.Run(fmt.Sprintf("%s/%s/%d", mode, source, count), func(t *testing.T) {
+				t.Run(fmt.Sprintf("%s/%s/%s/%d", policy.include, mode, source, count), func(t *testing.T) {
 					waf, err := coraza.NewWAF(coraza.NewWAFConfig().WithRootFS(root).WithDirectives(
-						"SecRuleEngine " + mode + "\nInclude @recommended-conf\nSecArgumentsLimit 2"))
+						"SecRuleEngine " + mode + "\nInclude " + policy.include + "\nSecArgumentsLimit 2"))
 					require.NoError(t, err)
 					tx := waf.NewTransaction()
 					defer func() { require.NoError(t, tx.Close()) }()

@@ -18,6 +18,8 @@ The fork defaults full transaction audit logging to Off. Wasm supports these
 records through the proxy's info-level log via the serial audit writer; Off is
 not a runtime requirement. The deployment configuration owns the audit policy.
 Rule-match logging is separate from full transaction audit logging.
+The demo config includes the same recommended rules with its existing partial-body,
+JSON-response, debug and audit settings. Its callers also select the mode explicitly.
 
 The following compatibility pins remain necessary:
 

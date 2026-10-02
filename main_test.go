@@ -954,7 +954,7 @@ func TestParseCRS(t *testing.T) {
 		opt := proxytest.
 			NewEmulatorOption().
 			WithVMContext(vm).
-			WithPluginConfiguration([]byte(`{"directives_map": {"default": [ "Include @ftw-conf", "Include @recommended-conf", "Include @crs-setup-conf", "Include @owasp_crs/*.conf", "SecRuleEngine On" ]}, "default_directives": "default"}`))
+			WithPluginConfiguration([]byte(`{"directives_map": {"default": [ "Include @ftw-conf", "Include @recommended-conf", "Include @crs-setup-conf", "Include @owasp_crs/*.conf", "SecRuleEngine DetectionOnly" ]}, "default_directives": "default"}`))
 
 		host, reset := proxytest.NewHostEmulator(opt)
 		defer reset()

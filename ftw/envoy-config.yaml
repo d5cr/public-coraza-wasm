@@ -43,7 +43,7 @@ static_resources:
                                     "Include @ftw-conf",
                                     "Include @crs-setup-conf",
                                     "Include @owasp_crs/*.conf",
-                                    "SecRuleEngine On"
+                                    "SecRuleEngine DetectionOnly"
                                   ]
                               },
                               "default_directives": "default",
