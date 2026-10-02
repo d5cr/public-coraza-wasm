@@ -5,6 +5,12 @@ run `go mod tidy` in each directory, then run `go work sync` from the root.
 Check the embedded CRS version, the recommended Coraza configuration, the images
 in the Compose files, and the pinned tools and actions in the build workflow.
 
+The Coraza v3.8.1 recommended configuration is embedded in
+`wasmplugin/rules/coraza.conf-recommended.conf`. Keep `SecAuditEngine Off` for this
+Wasm integration. The gateway also supplies that setting explicitly. The config
+includes argument-limit rules 200004 and 200005 and URI parsing rule 200009.
+`DetectionOnly` records these matches without rejecting traffic.
+
 The following compatibility pins remain necessary:
 
 - Go 1.26.8 and TinyGo 0.41.1 with the GC liveness repair from

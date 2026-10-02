@@ -5,6 +5,7 @@ package wasmplugin
 
 import (
 	"errors"
+	"fmt"
 	"testing"
 
 	"github.com/corazawaf/coraza/v3"
@@ -270,4 +271,46 @@ func TestWAFMap(t *testing.T) {
 		require.True(t, isDefault)
 		require.NoError(t, err)
 	})
+}
+
+func TestRecommendedArgumentLimit(t *testing.T) {
+	for _, mode := range []string{"On", "DetectionOnly"} {
+		for _, source := range []string{"query", "form"} {
+			for _, count := range []int{2, 3} {
+				t.Run(fmt.Sprintf("%s/%s/%d", mode, source, count), func(t *testing.T) {
+					waf, err := coraza.NewWAF(coraza.NewWAFConfig().WithRootFS(root).WithDirectives(
+						"Include @recommended-conf\nSecRuleEngine " + mode + "\nSecArgumentsLimit 2"))
+					require.NoError(t, err)
+					tx := waf.NewTransaction()
+					defer func() { require.NoError(t, tx.Close()) }()
+					values := "a=one&b=two"
+					if count == 3 {
+						values += "&c=three"
+					}
+					uri, method := "/", "POST"
+					if source == "query" {
+						uri, method = "/?"+values, "GET"
+					}
+					tx.ProcessURI(uri, method, "HTTP/1.1")
+					tx.AddRequestHeader("Host", "example.test")
+					if source == "form" {
+						tx.AddRequestHeader("Content-Type", "application/x-www-form-urlencoded")
+					}
+					interruption := tx.ProcessRequestHeaders()
+					if interruption == nil && source == "form" {
+						_, _, err = tx.WriteRequestBody([]byte(values))
+						require.NoError(t, err)
+						interruption, err = tx.ProcessRequestBody()
+						require.NoError(t, err)
+					}
+					if mode == "On" && count == 3 {
+						require.NotNil(t, interruption)
+						require.Equal(t, 400, interruption.Status)
+					} else {
+						require.Nil(t, interruption)
+					}
+				})
+			}
+		}
+	}
 }
