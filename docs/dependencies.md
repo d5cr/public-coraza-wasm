@@ -5,11 +5,16 @@ run `go mod tidy` in each directory, then run `go work sync` from the root.
 Check the embedded CRS version, the recommended Coraza configuration, the images
 in the Compose files, and the pinned tools and actions in the build workflow.
 
-The Coraza v3.8.1 recommended configuration is embedded in
-`wasmplugin/rules/coraza.conf-recommended.conf`. Keep `SecAuditEngine Off` for this
-Wasm integration. The gateway also supplies that setting explicitly. The config
-includes argument-limit rules 200004 and 200005 and URI parsing rule 200009.
-`DetectionOnly` records these matches without rejecting traffic.
+The Coraza v3.8.1 recommended rules are embedded in
+`wasmplugin/rules/coraza.conf-recommended.conf`. They include argument-limit rules
+200004 and 200005 and URI parsing rule 200009. The deployment configuration must
+select `SecRuleEngine` explicitly after its public rule includes. The embedded
+recommended configuration does not choose detection-only or blocking mode.
+
+The fork defaults full transaction audit logging to Off. Wasm supports these
+records through the proxy's info-level log via the serial audit writer; Off is
+not a runtime requirement. The deployment configuration owns the audit policy.
+Rule-match logging is separate from full transaction audit logging.
 
 The following compatibility pins remain necessary:
 

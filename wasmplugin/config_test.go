@@ -279,7 +279,7 @@ func TestRecommendedArgumentLimit(t *testing.T) {
 			for _, count := range []int{2, 3} {
 				t.Run(fmt.Sprintf("%s/%s/%d", mode, source, count), func(t *testing.T) {
 					waf, err := coraza.NewWAF(coraza.NewWAFConfig().WithRootFS(root).WithDirectives(
-						"Include @recommended-conf\nSecRuleEngine " + mode + "\nSecArgumentsLimit 2"))
+						"SecRuleEngine " + mode + "\nInclude @recommended-conf\nSecArgumentsLimit 2"))
 					require.NoError(t, err)
 					tx := waf.NewTransaction()
 					defer func() { require.NoError(t, tx.Close()) }()
