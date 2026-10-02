@@ -10,6 +10,9 @@ The Coraza v3.8.1 recommended rules are embedded in
 200004 and 200005 and URI parsing rule 200009. The deployment configuration must
 select `SecRuleEngine` explicitly after its public rule includes. The embedded
 recommended configuration does not choose detection-only or blocking mode.
+Coraza defaults to On if a deployment omits this directive. Before upgrading,
+set the intended mode explicitly; deployments that relied on the old embedded
+DetectionOnly setting would otherwise begin blocking.
 
 The fork defaults full transaction audit logging to Off. Wasm supports these
 records through the proxy's info-level log via the serial audit writer; Off is
