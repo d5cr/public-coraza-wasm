@@ -4,7 +4,7 @@ go 1.26.8
 
 require (
 	github.com/corazawaf/coraza-wasilibs v0.2.0
-	github.com/corazawaf/coraza/v3 v3.7.0
+	github.com/corazawaf/coraza/v3 v3.8.1
 	github.com/stretchr/testify v1.12.1
 	github.com/tetratelabs/proxy-wasm-go-sdk v0.24.0
 	github.com/tetratelabs/wazero v1.12.0
@@ -14,7 +14,7 @@ require (
 
 require (
 	github.com/corazawaf/libinjection-go v0.3.3 // indirect
-	github.com/go-json-experiment/json v0.0.0-20260623181947-01eb4420fa68 // indirect
+	github.com/go-json-experiment/json v0.0.0-20260820222146-c27c302e5fc3 // indirect
 	github.com/goccy/go-yaml v1.19.2 // indirect
 	github.com/kaptinlin/jsonpointer v0.4.28 // indirect
 	github.com/kaptinlin/jsonschema v0.9.8 // indirect
@@ -32,7 +32,6 @@ require (
 	golang.org/x/net v0.59.0 // indirect
 	golang.org/x/sync v0.23.0 // indirect
 	golang.org/x/sys v0.48.0 // indirect
-	golang.org/x/tools v0.49.0 // indirect
 	google.golang.org/protobuf v1.36.12 // indirect
 	rsc.io/binaryregexp v0.2.0 // indirect
 )

@@ -48,6 +48,7 @@ static_resources:
                               "directives_map": {
                                   "defaultrs": [
                                     "Include @demo-conf",
+                                    "SecRuleEngine On",
                                     "SecDebugLogLevel 3",
                                     "SecRule ARGS_POST \"@rx script\" \"id:100,phase:2,deny\""
                                   ]

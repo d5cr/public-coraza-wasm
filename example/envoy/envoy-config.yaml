@@ -57,6 +57,7 @@ static_resources:
                               "directives_map": {
                                   "rs1": [
                                     "Include @demo-conf",
+                                    "SecRuleEngine On",
                                     "Include @crs-setup-conf",
                                     "SecDefaultAction \"phase:3,log,auditlog,pass\"",
                                     "SecDefaultAction \"phase:4,log,auditlog,pass\"",
@@ -67,6 +68,7 @@ static_resources:
                                   ],
                                   "rs2": [
                                     "Include @demo-conf",
+                                    "SecRuleEngine On",
                                     "Include @crs-setup-conf",
                                     "SecDefaultAction \"phase:3,log,auditlog,pass\"",
                                     "SecDefaultAction \"phase:4,log,auditlog,pass\"",
