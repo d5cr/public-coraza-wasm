@@ -220,13 +220,16 @@ func Build() error {
 	buildTagArg := fmt.Sprintf("-tags='%s'", strings.Join(buildTags, " "))
 
 	// ~100MB initial heap
-	initialPages := 2100
+	initialPages := uint32(2100)
 	if ipEnv := os.Getenv("INITIAL_PAGES"); ipEnv != "" {
-		if ip, err := strconv.Atoi(ipEnv); err != nil {
-			return err
-		} else {
-			initialPages = ip
+		ip, err := strconv.ParseUint(ipEnv, 10, 32)
+		if err != nil {
+			return fmt.Errorf("invalid INITIAL_PAGES: %w", err)
 		}
+		if ip == 0 || ip > 65536 {
+			return fmt.Errorf("INITIAL_PAGES must be between 1 and 65536, got %d", ip)
+		}
+		initialPages = uint32(ip)
 	}
 
 	buildArgs := []string{
@@ -293,7 +296,7 @@ func ReloadEnvoyExample() error {
 
 var Default = Build
 
-func patchWasm(inPath, outPath string, initialPages int) error {
+func patchWasm(inPath, outPath string, initialPages uint32) error {
 	raw, err := os.ReadFile(inPath)
 	if err != nil {
 		return err
@@ -303,7 +306,7 @@ func patchWasm(inPath, outPath string, initialPages int) error {
 		return err
 	}
 
-	mod.MemorySection.Min = uint32(initialPages)
+	mod.MemorySection.Min = initialPages
 	// Envoy prefers malloc when it is exported, but does not call free for
 	// these buffers. TinyGo's libc wrapper would retain them indefinitely.
 	// Leave the SDK's GC-managed proxy_on_memory_allocate as the host ABI.

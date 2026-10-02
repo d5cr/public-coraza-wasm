@@ -8,6 +8,9 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/tetratelabs/wabin/binary"
+	"github.com/tetratelabs/wabin/wasm"
 )
 
 func TestMinimumVersionComparison(t *testing.T) {
@@ -44,5 +47,47 @@ func TestBuildRejectsAffectedCompiler(t *testing.T) {
 				t.Fatalf("expected compiler rejection, got %v", err)
 			}
 		})
+	}
+}
+
+func TestBuildRejectsInvalidInitialPages(t *testing.T) {
+	for _, value := range []string{"-1", "0", "65537", "4294967296", "invalid"} {
+		t.Run(value, func(t *testing.T) {
+			bin := t.TempDir()
+			compiler := "#!/bin/sh\nif [ \"$1\" = version ]; then echo 'tinygo version " + requiredTinygoVersion + " linux/amd64'; else echo 'unexpected compiler invocation' >&2; exit 1; fi\n"
+			if err := os.WriteFile(filepath.Join(bin, "tinygo"), []byte(compiler), 0700); err != nil {
+				t.Fatal(err)
+			}
+			t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
+			t.Setenv("INITIAL_PAGES", value)
+			if err := Build(); err == nil || !strings.Contains(err.Error(), "INITIAL_PAGES") {
+				t.Fatalf("expected INITIAL_PAGES rejection, got %v", err)
+			}
+		})
+	}
+}
+
+func TestPatchWasmInitialPages(t *testing.T) {
+	for _, pages := range []uint32{1, 2100, 65536} {
+		dir := t.TempDir()
+		input, output := filepath.Join(dir, "input.wasm"), filepath.Join(dir, "output.wasm")
+		raw := binary.EncodeModule(&wasm.Module{MemorySection: &wasm.Memory{Min: 1}})
+		if err := os.WriteFile(input, raw, 0600); err != nil {
+			t.Fatal(err)
+		}
+		if err := patchWasm(input, output, pages); err != nil {
+			t.Fatal(err)
+		}
+		patched, err := os.ReadFile(output)
+		if err != nil {
+			t.Fatal(err)
+		}
+		module, err := binary.DecodeModule(patched, wasm.CoreFeaturesV2)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if module.MemorySection.Min != pages {
+			t.Fatalf("memory minimum = %d, want %d", module.MemorySection.Min, pages)
+		}
 	}
 }
